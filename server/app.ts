@@ -171,8 +171,8 @@ export function createExpressApp(
         user: sanitizeUser(newUser, getOnlineUserIds()),
       });
     } catch (err: any) {
-      console.error('Register error:', err);
-      return res.status(500).json({ error: err.message || 'Erro ao registrar usuário.' });
+      console.error("CREATE_ACCOUNT_ERROR:", err);
+      return res.status(500).json({ error: 'Não foi possível criar sua conta. Tente novamente.' });
     }
   });
 
@@ -211,8 +211,8 @@ export function createExpressApp(
         user: sanitizeUser(user, getOnlineUserIds()),
       });
     } catch (err: any) {
-      console.error('Login error:', err);
-      return res.status(500).json({ error: err.message || 'Erro ao efetuar login.' });
+      console.error("LOGIN_ERROR:", err);
+      return res.status(500).json({ error: 'Erro ao efetuar login. Tente novamente.' });
     }
   });
 
@@ -574,9 +574,17 @@ export function createExpressApp(
     return res.status(201).json({ message: newMsg });
   });
 
-  // Health check
-  app.get(['/api/health', '/health', '/api', '/'], (req, res) => {
+  // Health check - only API prefixes, do NOT match '/'
+  app.get(['/api/health', '/health', '/api'], (req, res) => {
     res.json({ status: 'ok', time: new Date().toISOString(), storage: 'supabase' });
+  });
+
+  // Global error handling middleware
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('SERVER_UNHANDLED_ERROR:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Erro interno no servidor. Tente novamente.' });
+    }
   });
 
   return app;
