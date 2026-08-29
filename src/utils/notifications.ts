@@ -157,38 +157,58 @@ export interface NotificationOptions {
  * Sends a native system notification to the status bar (Android/Windows/Mac/Linux/iOS PWA)
  */
 export async function sendBrowserNotification(title: string, options: NotificationOptions): Promise<boolean> {
-  if (!isNotificationSupported()) {
-    return false;
-  }
-
-  // If permission not requested yet, ask now
-  if (getNotificationPermission() === 'default') {
-    const newPerm = await requestNotificationPermission();
-    if (newPerm !== 'granted') return false;
-  }
-
-  if (getNotificationPermission() !== 'granted') {
-    return false;
-  }
+  if (typeof window === 'undefined') return false;
 
   const notificationTag = options.tag || (options.conversationId ? `chat_${options.conversationId}` : 'blabla_chat');
   const iconUrl = options.icon || '/icon-192.png';
 
   // Haptic feedback (Vibration)
   try {
-    if (typeof window !== 'undefined' && window.navigator?.vibrate) {
+    if (window.navigator?.vibrate) {
       window.navigator.vibrate([200, 100, 200]);
     }
   } catch {
     // ignore
   }
 
-  // 1. Try Service Worker showNotification first (Works in background & mobile status bar)
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+    return false;
+  }
+
+  let sent = false;
+
+  // Layer 1: Fast dispatch to active Service Worker controller
+  if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+    try {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'SHOW_NOTIFICATION',
+        title,
+        options: {
+          body: options.body,
+          icon: iconUrl,
+          tag: notificationTag,
+          data: {
+            conversationId: options.conversationId,
+            timestamp: Date.now(),
+          },
+        },
+      });
+      sent = true;
+    } catch (e) {
+      console.debug('SW controller postMessage error:', e);
+    }
+  }
+
+  // Layer 2: Service Worker registration showNotification (Works in background & mobile status bar)
   if ('serviceWorker' in navigator) {
     try {
-      const reg = await navigator.serviceWorker.ready;
-      if (reg && reg.showNotification) {
-        await reg.showNotification(title, {
+      const reg = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 300)),
+      ]);
+      const targetReg = reg || (await navigator.serviceWorker.getRegistration());
+      if (targetReg && targetReg.showNotification) {
+        await targetReg.showNotification(title, {
           body: options.body,
           icon: iconUrl,
           badge: '/icon-192.png',
@@ -200,14 +220,15 @@ export async function sendBrowserNotification(title: string, options: Notificati
             timestamp: Date.now(),
           },
         } as any);
+        sent = true;
         return true;
       }
     } catch (err) {
-      console.debug('Service Worker showNotification fallback to window.Notification:', err);
+      console.debug('Service Worker showNotification error:', err);
     }
   }
 
-  // 2. Direct Window Notification fallback
+  // Layer 3: Direct Window Notification fallback
   if ('Notification' in window) {
     try {
       const notif = new Notification(title, {
@@ -230,7 +251,7 @@ export async function sendBrowserNotification(title: string, options: Notificati
         try {
           notif.close();
         } catch {}
-      }, 7000);
+      }, 8000);
 
       return true;
     } catch (err) {
@@ -238,7 +259,7 @@ export async function sendBrowserNotification(title: string, options: Notificati
     }
   }
 
-  return false;
+  return sent;
 }
 
 /**
@@ -246,16 +267,9 @@ export async function sendBrowserNotification(title: string, options: Notificati
  * Gives the user time to lock screen or minimize app so they can see the notification in system status bar.
  */
 export async function scheduleBackgroundNotification(title: string, options: NotificationOptions, delayMs = 5000): Promise<boolean> {
-  if (!isNotificationSupported()) {
-    return false;
-  }
+  if (typeof window === 'undefined') return false;
 
-  if (getNotificationPermission() === 'default') {
-    const newPerm = await requestNotificationPermission();
-    if (newPerm !== 'granted') return false;
-  }
-
-  if (getNotificationPermission() !== 'granted') {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
     return false;
   }
 
@@ -265,9 +279,13 @@ export async function scheduleBackgroundNotification(title: string, options: Not
   // Send schedule command to Service Worker
   if ('serviceWorker' in navigator) {
     try {
-      const reg = await navigator.serviceWorker.ready;
-      if (reg.active) {
-        reg.active.postMessage({
+      const reg = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 300)),
+      ]);
+      const targetReg = reg || (await navigator.serviceWorker.getRegistration());
+      if (targetReg?.active) {
+        targetReg.active.postMessage({
           type: 'SCHEDULE_NOTIFICATION',
           delayMs,
           title,

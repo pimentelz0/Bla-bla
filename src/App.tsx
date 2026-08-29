@@ -166,10 +166,13 @@ export default function App() {
             prevConv &&
             freshConv.last_message_at &&
             prevConv.last_message_at &&
-            new Date(freshConv.last_message_at).getTime() > new Date(prevConv.last_message_at).getTime();
+            freshConv.last_message_at !== prevConv.last_message_at;
+          const hasUnreadIncrease =
+            freshConv.unread_count > 0 &&
+            (!prevConv || freshConv.unread_count !== prevConv.unread_count);
 
           if (
-            (isNewConv || hasNewerMsg) &&
+            (isNewConv || hasNewerMsg || hasUnreadIncrease) &&
             freshConv.last_sender_id &&
             freshConv.last_sender_id !== currentUser.id &&
             freshConv.last_message
@@ -178,8 +181,14 @@ export default function App() {
             if (!processedMessageIdsRef.current.has(simulatedMsgId)) {
               processedMessageIdsRef.current.add(simulatedMsgId);
 
-              // If not currently inside that chat, trigger notification
-              if (activeConversationIdRef.current !== freshConv.id && !freshConv.is_muted) {
+              const isUserActivelyViewingThisChat =
+                activeConversationIdRef.current === freshConv.id &&
+                typeof document !== 'undefined' &&
+                document.visibilityState === 'visible' &&
+                document.hasFocus();
+
+              // Trigger notification if not actively looking at this conversation right now
+              if (!isUserActivelyViewingThisChat && !freshConv.is_muted) {
                 playNotificationSound();
 
                 const parsed = parseMessageContent(freshConv.last_message);
@@ -206,21 +215,23 @@ export default function App() {
                   },
                 });
 
-                setIncomingNotification({
-                  id: simulatedMsgId,
-                  conversationId: freshConv.id,
-                  sender: freshConv.other_user,
-                  message: {
+                if (activeConversationIdRef.current !== freshConv.id) {
+                  setIncomingNotification({
                     id: simulatedMsgId,
-                    conversation_id: freshConv.id,
-                    sender_id: freshConv.other_user.id,
-                    receiver_id: currentUser.id,
-                    message: freshConv.last_message,
-                    created_at: freshConv.last_message_at,
-                    read: false,
-                  },
-                  receivedAt: new Date(),
-                });
+                    conversationId: freshConv.id,
+                    sender: freshConv.other_user,
+                    message: {
+                      id: simulatedMsgId,
+                      conversation_id: freshConv.id,
+                      sender_id: freshConv.other_user.id,
+                      receiver_id: currentUser.id,
+                      message: freshConv.last_message,
+                      created_at: freshConv.last_message_at,
+                      read: false,
+                    },
+                    receivedAt: new Date(),
+                  });
+                }
               }
             }
           }
@@ -302,22 +313,20 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return;
 
-    // 1. Periodic background sync
+    // 1. Periodic background sync - runs continuously
     const pollInterval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        silentSyncConversations();
-        if (activeConversationIdRef.current) {
-          silentSyncActiveMessages(activeConversationIdRef.current);
-        }
-      }
-    }, 2500);
-
-    // 2. Active chat high-frequency sync (1.5s)
-    const activeChatInterval = window.setInterval(() => {
-      if (document.visibilityState === 'visible' && activeConversationIdRef.current) {
+      silentSyncConversations();
+      if (activeConversationIdRef.current) {
         silentSyncActiveMessages(activeConversationIdRef.current);
       }
-    }, 1500);
+    }, 2000);
+
+    // 2. Active chat high-frequency sync (1.2s)
+    const activeChatInterval = window.setInterval(() => {
+      if (activeConversationIdRef.current) {
+        silentSyncActiveMessages(activeConversationIdRef.current);
+      }
+    }, 1200);
 
     // 3. Instant triggers on focus, visibility change, and online
     const handleImmediateSync = () => {
@@ -329,17 +338,14 @@ export default function App() {
 
     window.addEventListener('focus', handleImmediateSync);
     window.addEventListener('online', handleImmediateSync);
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        handleImmediateSync();
-      }
-    });
+    document.addEventListener('visibilitychange', handleImmediateSync);
 
     return () => {
       clearInterval(pollInterval);
       clearInterval(activeChatInterval);
       window.removeEventListener('focus', handleImmediateSync);
       window.removeEventListener('online', handleImmediateSync);
+      document.removeEventListener('visibilitychange', handleImmediateSync);
     };
   }, [currentUser, silentSyncConversations, silentSyncActiveMessages]);
 
@@ -370,45 +376,61 @@ export default function App() {
       if (isFromOtherUser) {
         const existingConv = conversationsRef.current.find((c) => c.id === conversationId);
         const isMuted = existingConv?.is_muted;
-        const sender = senderUser || existingConv?.other_user;
+        const sender = senderUser || existingConv?.other_user || {
+          id: msg.sender_id,
+          username: 'contato',
+          profile_photo: '',
+          created_at: msg.created_at,
+          updated_at: msg.created_at,
+          last_seen: new Date().toISOString(),
+          is_online: true,
+        };
 
         if (!isMuted) {
-          // Melodic WhatsApp sound chime
-          playNotificationSound();
+          const isUserActivelyViewingThisChat =
+            isCurrentlyActive &&
+            typeof document !== 'undefined' &&
+            document.visibilityState === 'visible' &&
+            document.hasFocus();
 
-          const parsed = parseMessageContent(msg.message);
-          const previewText =
-            parsed.type === 'image'
-              ? '📷 Foto'
-              : parsed.type === 'audio'
-              ? '🎤 Mensagem de voz'
-              : parsed.type === 'sticker'
-              ? '🎭 Figurinha'
-              : msg.message;
+          if (!isUserActivelyViewingThisChat) {
+            // Melodic WhatsApp sound chime
+            playNotificationSound();
 
-          // Format sender title like WhatsApp: e.g. "@joao"
-          const senderTitle = sender?.username ? `@${sender.username}` : 'Blá Blá';
+            const parsed = parseMessageContent(msg.message);
+            const previewText =
+              parsed.type === 'image'
+                ? '📷 Foto'
+                : parsed.type === 'audio'
+                ? '🎤 Mensagem de voz'
+                : parsed.type === 'sticker'
+                ? '🎭 Figurinha'
+                : msg.message;
 
-          // Native Browser / System Notification Bar (WhatsApp style)
-          sendBrowserNotification(senderTitle, {
-            body: previewText,
-            icon: sender?.profile_photo || '/icon-192.png',
-            conversationId,
-            tag: `blabla_${conversationId}`,
-            onClick: () => {
-              setActiveConversationId(conversationId);
-            },
-          });
+            // Format sender title like WhatsApp: e.g. "@joao"
+            const senderTitle = sender.username ? `@${sender.username}` : 'Blá Blá';
 
-          // In-App Notification Banner if not looking at this chat
-          if (!isCurrentlyActive && sender) {
-            setIncomingNotification({
-              id: msg.id,
+            // Native Browser / System Notification Bar (WhatsApp style)
+            sendBrowserNotification(senderTitle, {
+              body: previewText,
+              icon: sender.profile_photo || '/icon-192.png',
               conversationId,
-              sender,
-              message: msg,
-              receivedAt: new Date(),
+              tag: `blabla_${conversationId}`,
+              onClick: () => {
+                setActiveConversationId(conversationId);
+              },
             });
+
+            // In-App Notification Banner if not looking at this chat
+            if (!isCurrentlyActive) {
+              setIncomingNotification({
+                id: msg.id,
+                conversationId,
+                sender,
+                message: msg,
+                receivedAt: new Date(),
+              });
+            }
           }
         }
       }
