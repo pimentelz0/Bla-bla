@@ -15,6 +15,7 @@ interface UseSocketProps {
   onNewMessage?: (msg: Message, conversationId: string, sender?: User) => void;
   onMessageRead?: (conversationId: string, readerId: string) => void;
   onPresenceUpdate?: (userId: string, isOnline: boolean, lastSeen: string) => void;
+  onConversationsSync?: () => void;
 }
 
 export function useSocket({
@@ -22,6 +23,7 @@ export function useSocket({
   onNewMessage,
   onMessageRead,
   onPresenceUpdate,
+  onConversationsSync,
 }: UseSocketProps) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
@@ -37,7 +39,10 @@ export function useSocket({
   const onPresenceUpdateRef = useRef(onPresenceUpdate);
   onPresenceUpdateRef.current = onPresenceUpdate;
 
-  // 1. Supabase Realtime Message Sync
+  const onConversationsSyncRef = useRef(onConversationsSync);
+  onConversationsSyncRef.current = onConversationsSync;
+
+  // 1. Supabase Realtime Message Sync & Conversation Sync
   useEffect(() => {
     if (!currentUser) return;
 
@@ -46,7 +51,7 @@ export function useSocket({
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
-        (payload: any) => {
+        async (payload: any) => {
           const newRow = payload.new;
           if (newRow && (newRow.receiver_id === currentUser.id || newRow.sender_id === currentUser.id)) {
             const msg: Message = {
@@ -58,7 +63,58 @@ export function useSocket({
               created_at: newRow.created_at,
               read: newRow.read,
             };
-            onNewMessageRef.current?.(msg, newRow.conversation_id);
+
+            let senderUser: User | undefined;
+            if (newRow.sender_id && newRow.sender_id !== currentUser.id) {
+              try {
+                const { data } = await supabaseClient
+                  .from('users')
+                  .select('id, username, profile_photo, created_at, updated_at, last_seen')
+                  .eq('id', newRow.sender_id)
+                  .single();
+                if (data) {
+                  senderUser = {
+                    id: data.id,
+                    username: data.username,
+                    profile_photo: data.profile_photo,
+                    created_at: data.created_at,
+                    updated_at: data.updated_at,
+                    last_seen: data.last_seen,
+                    is_online: true,
+                  };
+                }
+              } catch (err) {
+                console.debug('Failed to fetch sender details for notification:', err);
+              }
+
+              if (!senderUser) {
+                senderUser = {
+                  id: newRow.sender_id,
+                  username: 'contato',
+                  profile_photo: '',
+                  created_at: newRow.created_at,
+                  updated_at: newRow.created_at,
+                  last_seen: newRow.created_at,
+                  is_online: true,
+                };
+              }
+            }
+
+            onNewMessageRef.current?.(msg, newRow.conversation_id, senderUser);
+          }
+        },
+      )
+      .subscribe();
+
+    const convChannel = supabaseClient
+      .channel('public:conversations')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'conversations' },
+        (payload: any) => {
+          const row = payload.new || payload.old;
+          if (row && (row.user_1 === currentUser.id || row.user_2 === currentUser.id)) {
+            onConversationsSyncRef.current?.();
           }
         },
       )
@@ -66,6 +122,7 @@ export function useSocket({
 
     return () => {
       supabaseClient.removeChannel(messageChannel);
+      supabaseClient.removeChannel(convChannel);
     };
   }, [currentUser]);
 

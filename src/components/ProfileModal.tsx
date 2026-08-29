@@ -363,15 +363,15 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       // Play sound
                       playNotificationSound();
 
-                      // Dispatch strictly to system notification tray / status bar
-                      const sent = await sendBrowserNotification('@suporte_blabla (Blá Blá)', {
-                        body: '💬 Esta é uma notificação na barra de status do seu celular!',
+                      // Dispatch strictly to system notification tray / status bar formatted like WhatsApp
+                      const sent = await sendBrowserNotification('@maria_silva', {
+                        body: 'Oi! Tudo bem? Me avisa quando estiver livre para conversar! 👋',
                         icon: activeUser.profile_photo || '/icon-192.png',
-                        tag: 'test_notification',
+                        tag: 'test_notification_whatsapp',
                       });
 
                       if (sent) {
-                        setSuccessMsg('Notificação enviada para a barra de status!');
+                        setSuccessMsg('Notificação estilo WhatsApp enviada para a barra de status!');
                       } else if (isIOS() && !isStandalone()) {
                         setSuccessMsg('📱 No iPhone: Adicione o app à Tela de Início (📤) para receber na barra de status.');
                       } else {
@@ -383,7 +383,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     className="w-full py-2.5 px-3 bg-white hover:bg-gray-50 active:bg-gray-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-bold transition-all cursor-pointer text-center shadow-2xs flex items-center justify-center gap-1.5"
                   >
                     <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Testar Notificação na Barra do Celular</span>
+                    <span>Testar Notificação WhatsApp na Barra</span>
                   </button>
 
                   {/* Scheduled test button for background/locked screen */}
@@ -393,13 +393,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     onClick={async () => {
                       setErrorMsg(null);
                       setScheduledCountdown(5);
-                      setSuccessMsg('⏳ Bloqueie a tela ou saia do app agora! Notificação em 5s...');
+                      setSuccessMsg('⏳ Bloqueie a tela ou saia do app agora! Notificação estilo WhatsApp em 5s...');
 
                       // Schedule in Service Worker
                       await scheduleBackgroundNotification(
-                        '💬 @amigo (Blá Blá)',
+                        '@carlos_souza',
                         {
-                          body: 'Oi! Mensagem recebida enquanto você estava fora!',
+                          body: 'E aí! Você viu a mensagem que te mandei antes? 👀',
                           icon: activeUser.profile_photo || '/icon-192.png',
                           tag: 'background_test_notif',
                         },
@@ -412,7 +412,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         if (current <= 0) {
                           clearInterval(interval);
                           setScheduledCountdown(null);
-                          setSuccessMsg('Notificação enviada para a barra de status do celular!');
+                          setSuccessMsg('Notificação WhatsApp enviada para a tela de bloqueio!');
                           setTimeout(() => setSuccessMsg(null), 4000);
                         } else {
                           setScheduledCountdown(current);
@@ -424,7 +424,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     <span>
                       {scheduledCountdown !== null
                         ? `⏳ Saia do app / Bloqueie a tela (${scheduledCountdown}s)...`
-                        : '⏱️ Testar na Barra com Tela Bloqueada (em 5s)'}
+                        : '⏱️ Testar Mensagem na Barra com Tela Bloqueada (em 5s)'}
                     </span>
                   </button>
                 </div>

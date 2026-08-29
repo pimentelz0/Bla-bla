@@ -266,10 +266,17 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO anon, authent
 -- Forçar o Supabase PostgREST a recarregar o cache de tabelas
 NOTIFY pgrst, 'reload schema';
 
--- Habilitar Realtime para mensagens
+-- Habilitar Realtime para mensagens e conversas
 DO $$
 BEGIN
   ALTER PUBLICATION supabase_realtime ADD TABLE public.messages;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$
+BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.conversations;
 EXCEPTION
   WHEN duplicate_object THEN NULL;
 END $$;

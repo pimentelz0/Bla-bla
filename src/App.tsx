@@ -61,6 +61,11 @@ export default function App() {
   const conversationsRef = useRef<ConversationSummary[]>([]);
   conversationsRef.current = conversations;
 
+  const activeConversationIdRef = useRef<string | null>(null);
+  activeConversationIdRef.current = activeConversationId;
+
+  const processedMessageIdsRef = useRef<Set<string>>(new Set());
+
   // Initialize service worker & audio unlock on app mount
   useEffect(() => {
     registerServiceWorker();
@@ -133,7 +138,7 @@ export default function App() {
     verifyAuth();
   }, []);
 
-  // Fetch conversations
+  // Fetch conversations with loading indicator (initial or explicit reload)
   const loadConversations = useCallback(async () => {
     if (!currentUser) return;
     setIsLoadingConversations(true);
@@ -144,6 +149,87 @@ export default function App() {
       console.error('Error loading conversations:', err);
     } finally {
       setIsLoadingConversations(false);
+    }
+  }, [currentUser]);
+
+  // Silent sync conversations in background without screen flicker
+  const silentSyncConversations = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const freshList = await api.getConversations();
+      setConversations((prev) => {
+        // Check if any conversation has new incoming unread messages that weren't notified
+        freshList.forEach((freshConv) => {
+          const prevConv = prev.find((c) => c.id === freshConv.id);
+          const isNewConv = !prevConv;
+          const hasNewerMsg =
+            prevConv &&
+            freshConv.last_message_at &&
+            prevConv.last_message_at &&
+            new Date(freshConv.last_message_at).getTime() > new Date(prevConv.last_message_at).getTime();
+
+          if (
+            (isNewConv || hasNewerMsg) &&
+            freshConv.last_sender_id &&
+            freshConv.last_sender_id !== currentUser.id &&
+            freshConv.last_message
+          ) {
+            const simulatedMsgId = `sync_${freshConv.id}_${freshConv.last_message_at}`;
+            if (!processedMessageIdsRef.current.has(simulatedMsgId)) {
+              processedMessageIdsRef.current.add(simulatedMsgId);
+
+              // If not currently inside that chat, trigger notification
+              if (activeConversationIdRef.current !== freshConv.id && !freshConv.is_muted) {
+                playNotificationSound();
+
+                const parsed = parseMessageContent(freshConv.last_message);
+                const previewText =
+                  parsed.type === 'image'
+                    ? '📷 Foto'
+                    : parsed.type === 'audio'
+                    ? '🎤 Mensagem de voz'
+                    : parsed.type === 'sticker'
+                    ? '🎭 Figurinha'
+                    : freshConv.last_message;
+
+                const senderTitle = freshConv.other_user.username
+                  ? `@${freshConv.other_user.username}`
+                  : 'Blá Blá';
+
+                sendBrowserNotification(senderTitle, {
+                  body: previewText,
+                  icon: freshConv.other_user.profile_photo || '/icon-192.png',
+                  conversationId: freshConv.id,
+                  tag: `blabla_${freshConv.id}`,
+                  onClick: () => {
+                    setActiveConversationId(freshConv.id);
+                  },
+                });
+
+                setIncomingNotification({
+                  id: simulatedMsgId,
+                  conversationId: freshConv.id,
+                  sender: freshConv.other_user,
+                  message: {
+                    id: simulatedMsgId,
+                    conversation_id: freshConv.id,
+                    sender_id: freshConv.other_user.id,
+                    receiver_id: currentUser.id,
+                    message: freshConv.last_message,
+                    created_at: freshConv.last_message_at,
+                    read: false,
+                  },
+                  receivedAt: new Date(),
+                });
+              }
+            }
+          }
+        });
+
+        return freshList;
+      });
+    } catch (err) {
+      // Silent sync fail is ignored
     }
   }, [currentUser]);
 
@@ -160,6 +246,7 @@ export default function App() {
       try {
         const res = await api.getMessages(convId);
         setActiveMessages(res.messages);
+        res.messages.forEach((m) => processedMessageIdsRef.current.add(m.id));
 
         // Clear unread count for this conversation in list
         setConversations((prev) =>
@@ -174,6 +261,35 @@ export default function App() {
     [showToast],
   );
 
+  // Silent sync messages for active chat in background
+  const silentSyncActiveMessages = useCallback(
+    async (convId: string) => {
+      if (!currentUser || !convId) return;
+      try {
+        const res = await api.getMessages(convId);
+        setActiveMessages((prev) => {
+          let hasChange = false;
+          const existingIds = new Set(prev.map((m) => m.id));
+          const toAdd: Message[] = [];
+
+          res.messages.forEach((m) => {
+            if (!existingIds.has(m.id)) {
+              toAdd.push(m);
+              hasChange = true;
+              processedMessageIdsRef.current.add(m.id);
+            }
+          });
+
+          if (!hasChange) return prev;
+          return [...prev, ...toAdd];
+        });
+      } catch {
+        // silent
+      }
+    },
+    [currentUser],
+  );
+
   useEffect(() => {
     if (activeConversationId) {
       loadMessages(activeConversationId);
@@ -182,11 +298,62 @@ export default function App() {
     }
   }, [activeConversationId, loadMessages]);
 
-  // Real-time WebSocket Handlers
+  // Continuous Fast Auto-Sync Engine (Multi-layer resilience)
+  useEffect(() => {
+    if (!currentUser) return;
+
+    // 1. Periodic background sync
+    const pollInterval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        silentSyncConversations();
+        if (activeConversationIdRef.current) {
+          silentSyncActiveMessages(activeConversationIdRef.current);
+        }
+      }
+    }, 2500);
+
+    // 2. Active chat high-frequency sync (1.5s)
+    const activeChatInterval = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && activeConversationIdRef.current) {
+        silentSyncActiveMessages(activeConversationIdRef.current);
+      }
+    }, 1500);
+
+    // 3. Instant triggers on focus, visibility change, and online
+    const handleImmediateSync = () => {
+      silentSyncConversations();
+      if (activeConversationIdRef.current) {
+        silentSyncActiveMessages(activeConversationIdRef.current);
+      }
+    };
+
+    window.addEventListener('focus', handleImmediateSync);
+    window.addEventListener('online', handleImmediateSync);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        handleImmediateSync();
+      }
+    });
+
+    return () => {
+      clearInterval(pollInterval);
+      clearInterval(activeChatInterval);
+      window.removeEventListener('focus', handleImmediateSync);
+      window.removeEventListener('online', handleImmediateSync);
+    };
+  }, [currentUser, silentSyncConversations, silentSyncActiveMessages]);
+
+  // Real-time WebSocket & Realtime Handlers
   const handleNewMessage = useCallback(
     (msg: Message, conversationId: string, senderUser?: User) => {
       const isFromOtherUser = msg.sender_id !== currentUser?.id;
-      const isCurrentlyActive = activeConversationId === conversationId;
+      const isCurrentlyActive = activeConversationIdRef.current === conversationId;
+
+      // Deduplication check
+      if (processedMessageIdsRef.current.has(msg.id)) {
+        return;
+      }
+      processedMessageIdsRef.current.add(msg.id);
 
       // 1. If currently inside the active chat
       if (isCurrentlyActive) {
@@ -219,12 +386,14 @@ export default function App() {
               ? '🎭 Figurinha'
               : msg.message;
 
-          const senderName = sender?.username ? `@${sender.username}` : 'Nova mensagem';
+          // Format sender title like WhatsApp: e.g. "@joao"
+          const senderTitle = sender?.username ? `@${sender.username}` : 'Blá Blá';
 
-          // Native Browser / System Notification Bar
-          sendBrowserNotification(senderName, {
+          // Native Browser / System Notification Bar (WhatsApp style)
+          sendBrowserNotification(senderTitle, {
             body: previewText,
-            icon: sender?.profile_photo,
+            icon: sender?.profile_photo || '/icon-192.png',
+            conversationId,
             tag: `blabla_${conversationId}`,
             onClick: () => {
               setActiveConversationId(conversationId);
@@ -244,7 +413,7 @@ export default function App() {
         }
       }
 
-      // 3. Update conversations list
+      // 3. Update conversations list immediately (even for new users!)
       setConversations((prev) => {
         const existingIdx = prev.findIndex((c) => c.id === conversationId);
         if (existingIdx !== -1) {
@@ -270,12 +439,33 @@ export default function App() {
             return new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime();
           });
         } else {
-          loadConversations();
-          return prev;
+          // New conversation from a new user!
+          const newConv: ConversationSummary = {
+            id: conversationId,
+            other_user: senderUser || {
+              id: msg.sender_id,
+              username: 'novo_contato',
+              profile_photo: '',
+              created_at: msg.created_at,
+              updated_at: msg.created_at,
+              last_seen: new Date().toISOString(),
+              is_online: true,
+            },
+            last_message: msg.message,
+            last_message_at: msg.created_at,
+            last_sender_id: msg.sender_id,
+            unread_count: isCurrentlyActive || msg.sender_id === currentUser?.id ? 0 : 1,
+            is_pinned: false,
+            is_muted: false,
+            is_archived: false,
+            is_blocked: false,
+          };
+          silentSyncConversations();
+          return [newConv, ...prev];
         }
       });
     },
-    [activeConversationId, currentUser, loadConversations],
+    [currentUser, silentSyncConversations],
   );
 
   const handleMessageRead = useCallback((conversationId: string) => {
@@ -310,6 +500,7 @@ export default function App() {
     onNewMessage: handleNewMessage,
     onMessageRead: handleMessageRead,
     onPresenceUpdate: handlePresenceUpdate,
+    onConversationsSync: silentSyncConversations,
   });
 
   // Action Menu Handlers
