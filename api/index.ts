@@ -62,7 +62,7 @@ function sanitizeUser(u: { id: string; username: string; profile_photo: string; 
 }
 
 async function getAuthUser(req: any): Promise<{ user: DbUser; token: string } | null> {
-  const authHeader = req.headers.authorization || req.headers.Authorization;
+  const authHeader = req.headers?.authorization || req.headers?.Authorization;
   if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
     return null;
   }
@@ -72,20 +72,74 @@ async function getAuthUser(req: any): Promise<{ user: DbUser; token: string } | 
   return { user, token };
 }
 
+function getQueryParam(req: any, param: string): string {
+  try {
+    const fullUrl = req.url || '';
+    const queryIdx = fullUrl.indexOf('?');
+    if (queryIdx !== -1) {
+      const sp = new URLSearchParams(fullUrl.substring(queryIdx));
+      return sp.get(param) || '';
+    }
+  } catch {
+    // fallback
+  }
+  return '';
+}
+
+function resolvePathname(req: any): string {
+  // 1. Try query param 'path' or 'slug'
+  const pathParam = req.query?.path || getQueryParam(req, 'path');
+  if (pathParam && typeof pathParam === 'string') {
+    const clean = pathParam.replace(/^\/+/, '').replace(/\/+$/, '');
+    return `/api/${clean}`;
+  }
+  if (Array.isArray(req.query?.slug)) {
+    return `/api/${req.query.slug.join('/')}`;
+  }
+  if (typeof req.query?.slug === 'string') {
+    return `/api/${req.query.slug}`;
+  }
+
+  // 2. Try Vercel routing headers
+  const matchedPath = req.headers?.['x-matched-path'] || req.headers?.['x-vercel-matched-path'];
+  if (typeof matchedPath === 'string' && matchedPath.length > 0) {
+    const clean = matchedPath.split('?')[0].replace(/\/$/, '');
+    if (clean.startsWith('/api')) return clean;
+    return `/api${clean.startsWith('/') ? '' : '/'}${clean}`;
+  }
+
+  // 3. Try Vercel route matches header
+  const routeMatches = req.headers?.['x-now-route-matches'];
+  if (typeof routeMatches === 'string') {
+    const match = routeMatches.match(/(?:1|0)=([^&]+)/);
+    if (match && match[1]) {
+      const decoded = decodeURIComponent(match[1]);
+      const clean = decoded.startsWith('/') ? decoded : `/${decoded}`;
+      return `/api${clean}`.replace(/\/$/, '');
+    }
+  }
+
+  // 4. Fallback to req.url
+  const fullUrl = req.url || '';
+  let pathname = fullUrl.split('?')[0].replace(/\/$/, '') || '/api';
+  if (!pathname.startsWith('/api')) {
+    pathname = `/api${pathname.startsWith('/') ? '' : '/'}${pathname}`;
+  }
+  return pathname.replace(/\/$/, '') || '/api';
+}
+
 export default async function handler(req: any, res: any) {
-  // CORS headers
+  // Always set JSON content type & CORS
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    return res.status(200).json({ ok: true });
   }
 
-  // Parse URL and body
-  const fullUrl = req.url || '';
-  const urlObj = new URL(fullUrl, 'http://localhost');
-  const pathname = urlObj.pathname.replace(/\/$/, '') || '/api';
+  const pathname = resolvePathname(req);
   const method = req.method?.toUpperCase() || 'GET';
 
   let body = req.body;
@@ -263,7 +317,7 @@ export default async function handler(req: any, res: any) {
 
     // 8. Search Users
     if (pathname === '/api/users/search' && method === 'GET') {
-      const query = (urlObj.searchParams.get('q') || '').trim().replace(/^@/, '');
+      const query = (getQueryParam(req, 'q') || '').trim().replace(/^@/, '');
       if (!query) {
         return res.status(200).json({ users: [] });
       }

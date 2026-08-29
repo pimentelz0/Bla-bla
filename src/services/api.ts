@@ -44,27 +44,35 @@ async function fetchWithAuth<T>(endpoint: string, options: RequestInit = {}): Pr
       ...options,
       headers,
     });
-  } catch (err: any) {
+  } catch {
     throw new Error('Falha na conexão com o servidor. Verifique sua internet.');
   }
 
-  const contentType = response.headers.get('content-type') || '';
-  if (!contentType.includes('application/json')) {
-    if (!response.ok) {
-      throw new Error(`Erro do servidor (${response.status}). Tente novamente.`);
-    }
-    throw new Error('Resposta inesperada do servidor.');
-  }
-
-  let data: any;
+  let data: any = null;
   try {
-    data = await response.json();
+    const rawText = await response.text();
+    if (rawText) {
+      data = JSON.parse(rawText);
+    }
   } catch {
-    throw new Error('Erro ao processar resposta do servidor.');
+    // not valid JSON
   }
 
-  if (!response.ok || data?.error) {
-    throw new Error(data?.error || `Erro na requisição (${response.status}).`);
+  if (!response.ok) {
+    if (data && data.error) {
+      throw new Error(data.error);
+    }
+    if (response.status === 404) {
+      throw new Error('Serviço indisponível ou rota não encontrada (404).');
+    }
+    if (response.status === 500) {
+      throw new Error('Erro interno no servidor (500).');
+    }
+    throw new Error(`Erro no servidor (${response.status}). Tente novamente.`);
+  }
+
+  if (data && data.error) {
+    throw new Error(data.error);
   }
 
   return data as T;
