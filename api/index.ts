@@ -59,7 +59,7 @@ import {
   dbIsBlocked,
   dbToggleManualUnread,
   dbIsManualUnread,
-} from '../server/supabase';
+} from './supabase';
 
 function hashPassword(pin: string, salt: string): string {
   return crypto.pbkdf2Sync(pin, salt, 1000, 32, 'sha256').toString('hex');
