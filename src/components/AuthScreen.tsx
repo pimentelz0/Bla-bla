@@ -93,9 +93,14 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
             <motion.div
               initial={{ opacity: 0, y: -5 }}
               animate={{ opacity: 1, y: 0 }}
-              className="mb-5 p-3 rounded-2xl bg-rose-50 text-rose-600 text-xs font-medium text-center border border-rose-100"
+              className="mb-5 p-3.5 rounded-2xl bg-rose-50 text-rose-700 text-xs font-medium border border-rose-200/80 shadow-xs space-y-1 text-left"
             >
-              {errorMsg}
+              <div className="flex items-start gap-2">
+                <span className="text-rose-500 font-bold shrink-0 mt-0.5">⚠️</span>
+                <div className="flex-1 break-words whitespace-pre-wrap font-mono text-[11px] leading-relaxed">
+                  {errorMsg}
+                </div>
+              </div>
             </motion.div>
           )}
 

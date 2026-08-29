@@ -7,6 +7,7 @@ import {
   DbPin,
   SUPABASE_SQL_SCHEMA,
   SUPABASE_URL,
+  KEY_TYPE,
   checkSupabaseConnection,
   dbFindUserByUsername,
   dbFindUserById,
@@ -130,40 +131,70 @@ export function createExpressApp(
 
   // --- Auth Routes ---
   app.post(['/api/auth/register', '/auth/register'], async (req, res) => {
+    const reqStartTime = new Date().toISOString();
+    console.log(`[CREATE_ACCOUNT][STEP 1: REQ_START] Início da requisição às ${reqStartTime} via POST ${req.url}`);
+
     try {
       let { username, pin, profile_photo } = req.body || {};
 
+      console.log(`[CREATE_ACCOUNT][STEP 2: RECEIVED_DATA] Dados recebidos: username="${username || ''}", hasPin=${!!pin}, pinLength=${pin ? String(pin).length : 0}, hasAvatar=${!!profile_photo}`);
+
       if (!username || typeof username !== 'string') {
-        return res.status(400).json({ error: 'Nome de usuário obrigatório.' });
-      }
-
-      username = username.trim().toLowerCase().replace(/^@/, '');
-
-      // Validate username: 3-20 characters, letters, numbers, underscores only
-      if (!/^[a-z0-9_]{3,20}$/.test(username)) {
+        console.warn(`[CREATE_ACCOUNT][VALIDATION_FAILED] Username ausente.`);
         return res.status(400).json({
-          error: 'O nome de usuário deve ter entre 3 e 20 caracteres (apenas letras, números e _ sem espaços).',
+          error: 'Nome de usuário obrigatório.',
+          error_name: 'ValidationError',
+          code: 'USERNAME_REQUIRED',
         });
       }
 
-      // Check duplicate in Supabase
-      const existing = await dbFindUserByUsername(username);
-      if (existing) {
-        return res.status(400).json({ error: 'Esse nome de usuário já está sendo usado.' });
+      username = username.trim().toLowerCase().replace(/^@/, '');
+      console.log(`[CREATE_ACCOUNT][STEP 3: VALIDATE_USERNAME] Validando username "${username}"...`);
+
+      // Validate username: 3-20 characters, letters, numbers, underscores only
+      if (!/^[a-z0-9_]{3,20}$/.test(username)) {
+        console.warn(`[CREATE_ACCOUNT][VALIDATION_FAILED] Formato inválido para username "${username}".`);
+        return res.status(400).json({
+          error: 'O nome de usuário deve ter entre 3 e 20 caracteres (apenas letras, números e _ sem espaços).',
+          error_name: 'ValidationError',
+          code: 'INVALID_USERNAME_FORMAT',
+        });
       }
 
+      console.log(`[CREATE_ACCOUNT][STEP 4: VALIDATE_PIN] Validando senha/PIN...`);
       // Validate PIN: exactly 4 numeric digits
       if (!pin || typeof pin !== 'string' || !/^\d{4}$/.test(pin.trim())) {
-        return res.status(400).json({ error: 'A senha deve conter exatamente 4 números.' });
+        console.warn(`[CREATE_ACCOUNT][VALIDATION_FAILED] PIN não contém exatamente 4 dígitos.`);
+        return res.status(400).json({
+          error: 'A senha deve conter exatamente 4 números.',
+          error_name: 'ValidationError',
+          code: 'INVALID_PIN_FORMAT',
+        });
+      }
+
+      console.log(`[CREATE_ACCOUNT][STEP 5: HASH_PIN] Gerando salt seguro e hash PBKDF2...`);
+      const salt = crypto.randomBytes(16).toString('hex');
+      const password_hash = hashPassword(pin.trim(), salt);
+
+      console.log(`[CREATE_ACCOUNT][STEP 6: DB_CONNECT] Conectando ao Supabase (${SUPABASE_URL}) [Tipo de chave: ${KEY_TYPE}]...`);
+
+      console.log(`[CREATE_ACCOUNT][STEP 7: CHECK_DUPLICATE] Verificando se username "${username}" já existe no banco...`);
+      const existing = await dbFindUserByUsername(username);
+      if (existing) {
+        console.warn(`[CREATE_ACCOUNT][DUPLICATE_USERNAME] Username "${username}" já em uso.`);
+        return res.status(400).json({
+          error: 'Esse nome de usuário já está sendo usado.',
+          error_name: 'DuplicateUserError',
+          code: 'USER_ALREADY_EXISTS',
+        });
       }
 
       if (!profile_photo || typeof profile_photo !== 'string') {
         const randIndex = Math.floor(Math.random() * DEFAULT_AVATARS.length);
         profile_photo = DEFAULT_AVATARS[randIndex];
       }
+      console.log(`[CREATE_ACCOUNT][STEP 9: SAVE_AVATAR] Avatar atribuído com sucesso.`);
 
-      const salt = crypto.randomBytes(16).toString('hex');
-      const password_hash = hashPassword(pin.trim(), salt);
       const userId = `u_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const now = new Date().toISOString();
 
@@ -179,15 +210,34 @@ export function createExpressApp(
       };
 
       const token = `tok_${crypto.randomBytes(24).toString('hex')}`;
+
+      console.log(`[CREATE_ACCOUNT][STEP 8: CREATE_USER] Inserindo novo usuário id="${userId}" no Supabase...`);
       await dbCreateUser(newUser, token);
+
+      console.log(`[CREATE_ACCOUNT][STEP 10: SEND_RESPONSE] Conta criada com sucesso para @${username} (id: ${userId}). Resposta 201 enviada.`);
 
       return res.status(201).json({
         token,
         user: sanitizeUser(newUser, getOnlineUserIds()),
       });
     } catch (err: any) {
-      console.error("CREATE_ACCOUNT_ERROR:", err);
-      return res.status(500).json({ error: 'Não foi possível criar sua conta. Tente novamente.' });
+      console.error("CREATE_ACCOUNT_ERROR", {
+        name: err?.name || 'Error',
+        message: err?.message || String(err),
+        code: err?.code || (err as any)?.statusCode || 'INTERNAL_ERROR',
+        details: err?.details || null,
+        hint: err?.hint || null,
+        stack: err?.stack,
+      });
+
+      const statusCode = (err as any)?.statusCode || 500;
+      return res.status(statusCode).json({
+        error: err?.message || 'Erro ao criar conta.',
+        error_name: err?.name || 'CreateAccountError',
+        code: err?.code || 'ERROR_UNKNOWN',
+        details: err?.details || null,
+        hint: err?.hint || null,
+      });
     }
   });
 

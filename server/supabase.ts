@@ -7,22 +7,104 @@ export const SUPABASE_URL = (
   'https://myoicywulrrzfohlsjfe.supabase.co'
 ).trim().replace(/\/+$/, '');
 
-export const SUPABASE_ANON_KEY = (
+// Prioritize Service Role Key on backend (bypasses RLS safely on server) if provided, otherwise Anon Key
+const serviceRoleKey = (
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.VITE_SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SERVICE_KEY ||
+  process.env.SERVICE_ROLE_KEY ||
+  ''
+).trim();
+
+const anonKey = (
   process.env.SUPABASE_ANON_KEY ||
   process.env.VITE_SUPABASE_ANON_KEY ||
   process.env.SUPABASE_KEY ||
   process.env.VITE_SUPABASE_KEY ||
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
   'sb_publishable_-O-nGwbzijL96e0vOrDTyw_kmiA-eCn'
 ).trim();
 
-export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+export const SUPABASE_KEY = serviceRoleKey || anonKey;
+export const IS_SERVICE_ROLE = !!serviceRoleKey;
+export const KEY_TYPE = IS_SERVICE_ROLE ? 'service_role (Admin - Bypass RLS)' : 'anon (Public)';
+
+export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: {
     persistSession: false,
     autoRefreshToken: false,
   },
 });
+
+export class SupabaseDbError extends Error {
+  code?: string;
+  details?: string;
+  hint?: string;
+  statusCode: number;
+
+  constructor(message: string, code?: string, details?: string, hint?: string, statusCode = 500) {
+    super(message);
+    this.name = 'SupabaseDbError';
+    this.code = code;
+    this.details = details;
+    this.hint = hint;
+    this.statusCode = statusCode;
+  }
+}
+
+export class SupabaseRLSError extends SupabaseDbError {
+  constructor(tableName: string, operation: string, originalMessage: string, code = '42501') {
+    const msg = `Bloqueado por Row-Level Security (RLS) no Supabase na tabela "${tableName}" durante operação de ${operation}. Para resolver: execute o script SQL com as políticas RLS no Supabase SQL Editor ou adicione a variável SUPABASE_SERVICE_ROLE_KEY na Vercel. (${originalMessage})`;
+    super(msg, code, `Tabela: ${tableName}, Operação: ${operation}`, 'Execute o SQL de RLS no Supabase Dashboard ou configure SUPABASE_SERVICE_ROLE_KEY na Vercel', 403);
+    this.name = 'SupabaseRLSError';
+  }
+}
+
+export class SupabaseTableNotFoundError extends SupabaseDbError {
+  constructor(tableName: string, originalMessage: string, code = 'PGRST205') {
+    const msg = `Tabela "${tableName}" não existe no banco de dados Supabase (${SUPABASE_URL}). Execute o script SQL no Supabase SQL Editor para criar as tabelas. (${originalMessage})`;
+    super(msg, code, `Tabela ausente: ${tableName}`, 'Copie e cole o schema SQL fornecido no SQL Editor do Supabase', 503);
+    this.name = 'SupabaseTableNotFoundError';
+  }
+}
+
+function parseSupabaseError(tableName: string, operation: string, err: any): SupabaseDbError {
+  if (!err) return new SupabaseDbError('Erro desconhecido no banco de dados', 'UNKNOWN_DB_ERROR');
+  const code = err.code || err.statusCode || '';
+  const msg = err.message || String(err);
+  const details = err.details || '';
+  const hint = err.hint || '';
+
+  // RLS violation codes (42501, PGRST301, permission denied, row-level security)
+  if (
+    code === '42501' ||
+    code === 'PGRST301' ||
+    msg.toLowerCase().includes('row-level security') ||
+    msg.toLowerCase().includes('violates row-level security policy') ||
+    msg.toLowerCase().includes('permission denied')
+  ) {
+    return new SupabaseRLSError(tableName, operation, msg, code);
+  }
+
+  // Missing table codes (PGRST205, 42P01, relation does not exist, could not find the table)
+  if (
+    code === 'PGRST205' ||
+    code === '42P01' ||
+    msg.toLowerCase().includes('relation') && msg.toLowerCase().includes('does not exist') ||
+    msg.toLowerCase().includes('could not find the table')
+  ) {
+    return new SupabaseTableNotFoundError(tableName, msg, code);
+  }
+
+  // Duplicate key (23505)
+  if (code === '23505' || msg.toLowerCase().includes('duplicate key') || msg.toLowerCase().includes('unique constraint')) {
+    const dupErr = new SupabaseDbError(`Registro já existente (duplicado) na tabela "${tableName}".`, code, details || msg, hint, 400);
+    dupErr.name = 'DuplicateRecordError';
+    return dupErr;
+  }
+
+  return new SupabaseDbError(`Erro no Supabase (${tableName}/${operation}): ${msg}`, code, details, hint, 500);
+}
 
 export interface DbUser {
   id: string;
@@ -191,11 +273,21 @@ export async function dbFindUserByUsername(username: string): Promise<DbUser | n
       .ilike('username', cleanUsername)
       .maybeSingle();
 
-    if (!error && data) {
+    if (error) {
+      console.error('[SUPABASE_QUERY_ERROR] dbFindUserByUsername error:', error);
+      throw parseSupabaseError('users', 'SELECT (find username)', error);
+    }
+
+    if (data) {
+      memoryFallback.users.set(data.id, data as DbUser);
       return data as DbUser;
     }
-  } catch (err) {
-    console.error('Supabase find user error:', err);
+  } catch (err: any) {
+    if (err instanceof SupabaseDbError) {
+      throw err;
+    }
+    console.error('Supabase find user exception:', err);
+    throw parseSupabaseError('users', 'SELECT (find username)', err);
   }
 
   // Memory fallback check
@@ -213,11 +305,18 @@ export async function dbFindUserById(id: string): Promise<DbUser | null> {
       .eq('id', id)
       .maybeSingle();
 
-    if (!error && data) {
+    if (error) {
+      console.error('[SUPABASE_QUERY_ERROR] dbFindUserById error:', error);
+      throw parseSupabaseError('users', 'SELECT (find id)', error);
+    }
+
+    if (data) {
+      memoryFallback.users.set(data.id, data as DbUser);
       return data as DbUser;
     }
-  } catch (err) {
-    console.error('Supabase find user by id error:', err);
+  } catch (err: any) {
+    if (err instanceof SupabaseDbError) throw err;
+    console.error('Supabase find user by id exception:', err);
   }
 
   return memoryFallback.users.get(id) || null;
@@ -231,11 +330,17 @@ export async function dbFindUserByToken(token: string): Promise<DbUser | null> {
       .eq('token', token)
       .maybeSingle();
 
-    if (!tokenErr && tokenData?.user_id) {
+    if (tokenErr) {
+      console.error('[SUPABASE_QUERY_ERROR] dbFindUserByToken error:', tokenErr);
+      throw parseSupabaseError('auth_tokens', 'SELECT (find token)', tokenErr);
+    }
+
+    if (tokenData?.user_id) {
       return await dbFindUserById(tokenData.user_id);
     }
-  } catch (err) {
-    console.error('Supabase find user by token error:', err);
+  } catch (err: any) {
+    if (err instanceof SupabaseDbError) throw err;
+    console.error('Supabase find user by token exception:', err);
   }
 
   const memoryUserId = memoryFallback.tokens.get(token);
@@ -249,23 +354,22 @@ export async function dbCreateUser(user: DbUser, token: string): Promise<void> {
   memoryFallback.users.set(user.id, user);
   memoryFallback.tokens.set(token, user.id);
 
-  try {
-    const { error: userErr } = await supabase.from('users').insert([user]);
-    if (userErr) {
-      console.warn('Supabase insert user warning:', userErr.message);
-    }
-    const { error: tokErr } = await supabase.from('auth_tokens').insert([
-      {
-        token,
-        user_id: user.id,
-        created_at: new Date().toISOString(),
-      },
-    ]);
-    if (tokErr) {
-      console.warn('Supabase insert token warning:', tokErr.message);
-    }
-  } catch (err) {
-    console.error('Supabase create user error:', err);
+  const { error: userErr } = await supabase.from('users').insert([user]);
+  if (userErr) {
+    console.error('[SUPABASE_INSERT_ERROR] Error inserting user into "users" table:', userErr);
+    throw parseSupabaseError('users', 'INSERT', userErr);
+  }
+
+  const { error: tokErr } = await supabase.from('auth_tokens').insert([
+    {
+      token,
+      user_id: user.id,
+      created_at: new Date().toISOString(),
+    },
+  ]);
+  if (tokErr) {
+    console.error('[SUPABASE_INSERT_ERROR] Error inserting auth token into "auth_tokens" table:', tokErr);
+    throw parseSupabaseError('auth_tokens', 'INSERT', tokErr);
   }
 }
 

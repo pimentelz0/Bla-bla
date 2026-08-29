@@ -7,6 +7,7 @@ import {
   DbPin,
   SUPABASE_SQL_SCHEMA,
   SUPABASE_URL,
+  KEY_TYPE,
   checkSupabaseConnection,
   dbFindUserByUsername,
   dbFindUserById,
@@ -212,55 +213,111 @@ export default async function handler(req: any, res: any) {
 
     // 3. Register
     if (pathname === '/api/auth/register' && method === 'POST') {
-      let { username, pin, profile_photo } = body;
-      if (!username || typeof username !== 'string') {
-        return sendJson(res, 400, { error: 'Nome de usuário obrigatório.' });
-      }
+      const reqStartTime = new Date().toISOString();
+      console.log(`[CREATE_ACCOUNT][STEP 1: REQ_START] Início da requisição às ${reqStartTime} via POST /api/auth/register (Vercel Serverless)`);
 
-      username = username.trim().toLowerCase().replace(/^@/, '');
-      if (!/^[a-z0-9_]{3,20}$/.test(username)) {
-        return sendJson(res, 400, {
-          error: 'O nome de usuário deve ter entre 3 e 20 caracteres (apenas letras, números e _).',
+      try {
+        let { username, pin, profile_photo } = body;
+        console.log(`[CREATE_ACCOUNT][STEP 2: RECEIVED_DATA] Dados recebidos: username="${username || ''}", hasPin=${!!pin}, pinLength=${pin ? String(pin).length : 0}, hasAvatar=${!!profile_photo}`);
+
+        if (!username || typeof username !== 'string') {
+          console.warn(`[CREATE_ACCOUNT][VALIDATION_FAILED] Nome de usuário ausente.`);
+          return sendJson(res, 400, {
+            error: 'Nome de usuário obrigatório.',
+            error_name: 'ValidationError',
+            code: 'USERNAME_REQUIRED',
+          });
+        }
+
+        username = username.trim().toLowerCase().replace(/^@/, '');
+        console.log(`[CREATE_ACCOUNT][STEP 3: VALIDATE_USERNAME] Validando username "${username}"...`);
+
+        if (!/^[a-z0-9_]{3,20}$/.test(username)) {
+          console.warn(`[CREATE_ACCOUNT][VALIDATION_FAILED] Formato inválido para username "${username}".`);
+          return sendJson(res, 400, {
+            error: 'O nome de usuário deve ter entre 3 e 20 caracteres (apenas letras, números e _).',
+            error_name: 'ValidationError',
+            code: 'INVALID_USERNAME_FORMAT',
+          });
+        }
+
+        console.log(`[CREATE_ACCOUNT][STEP 4: VALIDATE_PIN] Validando senha/PIN...`);
+        if (!pin || typeof pin !== 'string' || !/^\d{4}$/.test(pin.trim())) {
+          console.warn(`[CREATE_ACCOUNT][VALIDATION_FAILED] PIN não contém exatamente 4 dígitos.`);
+          return sendJson(res, 400, {
+            error: 'A senha deve conter exatamente 4 números.',
+            error_name: 'ValidationError',
+            code: 'INVALID_PIN_FORMAT',
+          });
+        }
+
+        console.log(`[CREATE_ACCOUNT][STEP 5: HASH_PIN] Gerando salt seguro e hash PBKDF2...`);
+        const salt = crypto.randomBytes(16).toString('hex');
+        const password_hash = hashPassword(pin.trim(), salt);
+
+        console.log(`[CREATE_ACCOUNT][STEP 6: DB_CONNECT] Conectando ao Supabase (${SUPABASE_URL}) [Tipo de chave: ${KEY_TYPE}]...`);
+
+        console.log(`[CREATE_ACCOUNT][STEP 7: CHECK_DUPLICATE] Verificando se username "${username}" já existe no banco...`);
+        const existing = await dbFindUserByUsername(username);
+        if (existing) {
+          console.warn(`[CREATE_ACCOUNT][DUPLICATE_USERNAME] Username "${username}" já em uso.`);
+          return sendJson(res, 400, {
+            error: 'Esse nome de usuário já está sendo usado.',
+            error_name: 'DuplicateUserError',
+            code: 'USER_ALREADY_EXISTS',
+          });
+        }
+
+        if (!profile_photo || typeof profile_photo !== 'string') {
+          const randIndex = Math.floor(Math.random() * DEFAULT_AVATARS.length);
+          profile_photo = DEFAULT_AVATARS[randIndex];
+        }
+        console.log(`[CREATE_ACCOUNT][STEP 9: SAVE_AVATAR] Avatar atribuído com sucesso.`);
+
+        const userId = `u_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const now = new Date().toISOString();
+
+        const newUser: DbUser = {
+          id: userId,
+          username,
+          salt,
+          password_hash,
+          profile_photo,
+          created_at: now,
+          updated_at: now,
+          last_seen: now,
+        };
+
+        const token = `tok_${crypto.randomBytes(24).toString('hex')}`;
+
+        console.log(`[CREATE_ACCOUNT][STEP 8: CREATE_USER] Inserindo novo usuário id="${userId}" no Supabase...`);
+        await dbCreateUser(newUser, token);
+
+        console.log(`[CREATE_ACCOUNT][STEP 10: SEND_RESPONSE] Conta criada com sucesso para @${username} (id: ${userId}). Resposta 201 enviada.`);
+
+        return sendJson(res, 201, {
+          token,
+          user: sanitizeUser(newUser),
+        });
+      } catch (regErr: any) {
+        console.error("CREATE_ACCOUNT_ERROR", {
+          name: regErr?.name || 'Error',
+          message: regErr?.message || String(regErr),
+          code: regErr?.code || (regErr as any)?.statusCode || 'INTERNAL_ERROR',
+          details: regErr?.details || null,
+          hint: regErr?.hint || null,
+          stack: regErr?.stack,
+        });
+
+        const statusCode = (regErr as any)?.statusCode || 500;
+        return sendJson(res, statusCode, {
+          error: regErr?.message || 'Erro ao criar conta.',
+          error_name: regErr?.name || 'CreateAccountError',
+          code: regErr?.code || 'ERROR_UNKNOWN',
+          details: regErr?.details || null,
+          hint: regErr?.hint || null,
         });
       }
-
-      const existing = await dbFindUserByUsername(username);
-      if (existing) {
-        return sendJson(res, 400, { error: 'Esse nome de usuário já está sendo usado.' });
-      }
-
-      if (!pin || typeof pin !== 'string' || !/^\d{4}$/.test(pin.trim())) {
-        return sendJson(res, 400, { error: 'A senha deve conter exatamente 4 números.' });
-      }
-
-      if (!profile_photo || typeof profile_photo !== 'string') {
-        const randIndex = Math.floor(Math.random() * DEFAULT_AVATARS.length);
-        profile_photo = DEFAULT_AVATARS[randIndex];
-      }
-
-      const salt = crypto.randomBytes(16).toString('hex');
-      const password_hash = hashPassword(pin.trim(), salt);
-      const userId = `u_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      const now = new Date().toISOString();
-
-      const newUser: DbUser = {
-        id: userId,
-        username,
-        salt,
-        password_hash,
-        profile_photo,
-        created_at: now,
-        updated_at: now,
-        last_seen: now,
-      };
-
-      const token = `tok_${crypto.randomBytes(24).toString('hex')}`;
-      await dbCreateUser(newUser, token);
-
-      return sendJson(res, 201, {
-        token,
-        user: sanitizeUser(newUser),
-      });
     }
 
     // 4. Login
@@ -585,7 +642,21 @@ export default async function handler(req: any, res: any) {
 
     return sendJson(res, 404, { error: 'Rota não encontrada: ' + pathname });
   } catch (err: any) {
-    console.error('CREATE_ACCOUNT_ERROR / VERCEL_API_ERROR:', err);
-    return sendJson(res, 500, { error: 'Não foi possível completar a solicitação. Tente novamente.' });
+    console.error('VERCEL_API_ERROR:', {
+      name: err?.name || 'Error',
+      message: err?.message || String(err),
+      code: err?.code || (err as any)?.statusCode,
+      details: err?.details,
+      hint: err?.hint,
+      stack: err?.stack,
+    });
+    const statusCode = (err as any)?.statusCode || 500;
+    return sendJson(res, statusCode, {
+      error: err?.message || 'Erro no processamento da solicitação.',
+      error_name: err?.name || 'ServerError',
+      code: err?.code || 'ERROR_INTERNAL',
+      details: err?.details || null,
+      hint: err?.hint || null,
+    });
   }
 }

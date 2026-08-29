@@ -59,16 +59,11 @@ async function fetchWithAuth<T>(endpoint: string, options: RequestInit = {}): Pr
   }
 
   if (!response.ok) {
-    if (data && data.error) {
-      throw new Error(data.error);
-    }
-    if (response.status === 404) {
-      throw new Error('Serviço temporariamente indisponível. Tente novamente em instantes.');
-    }
-    if (response.status === 500) {
-      throw new Error(data?.error || 'Não foi possível completar a solicitação. Tente novamente.');
-    }
-    throw new Error(data?.error || `Erro na comunicação com o servidor (${response.status}). Tente novamente.`);
+    const errorPrefix = data?.error_name ? `[${data.error_name}${data.code ? `: ${data.code}` : ''}] ` : '';
+    const mainMsg = data?.error || (response.status === 404 ? 'Serviço temporariamente indisponível (404).' : `Erro HTTP ${response.status}`);
+    const detailsMsg = data?.details && data.details !== data.error ? ` (${data.details})` : '';
+    const hintMsg = data?.hint ? `\n💡 Dica: ${data.hint}` : '';
+    throw new Error(`${errorPrefix}${mainMsg}${detailsMsg}${hintMsg}`);
   }
 
   if (data && data.error) {
@@ -80,35 +75,27 @@ async function fetchWithAuth<T>(endpoint: string, options: RequestInit = {}): Pr
 
 export const api = {
   async register(username: string, pin: string, profilePhoto?: string): Promise<AuthResponse> {
-    try {
-      const res = await fetchWithAuth<AuthResponse>('/api/auth/register', {
-        method: 'POST',
-        body: JSON.stringify({ username, pin, profile_photo: profilePhoto }),
-      });
-      if (!res || !res.user || !res.token) {
-        throw new Error('Não foi possível criar sua conta. Tente novamente.');
-      }
-      setStoredAuth(res.token, res.user);
-      return res;
-    } catch (err: any) {
-      throw new Error(err.message || 'Não foi possível criar sua conta. Tente novamente.');
+    const res = await fetchWithAuth<AuthResponse>('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, pin, profile_photo: profilePhoto }),
+    });
+    if (!res || !res.user || !res.token) {
+      throw new Error('Não foi possível completar o cadastro: resposta vazia do servidor.');
     }
+    setStoredAuth(res.token, res.user);
+    return res;
   },
 
   async login(username: string, pin: string): Promise<AuthResponse> {
-    try {
-      const res = await fetchWithAuth<AuthResponse>('/api/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ username, pin }),
-      });
-      if (!res || !res.user || !res.token) {
-        throw new Error('Usuário ou senha incorretos.');
-      }
-      setStoredAuth(res.token, res.user);
-      return res;
-    } catch (err: any) {
-      throw new Error(err.message || 'Erro ao efetuar login. Verifique seus dados.');
+    const res = await fetchWithAuth<AuthResponse>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, pin }),
+    });
+    if (!res || !res.user || !res.token) {
+      throw new Error('Usuário ou senha incorretos.');
     }
+    setStoredAuth(res.token, res.user);
+    return res;
   },
 
   async getMe(): Promise<User> {
