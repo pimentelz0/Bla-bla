@@ -8,6 +8,7 @@ import { INVENTED_EMOJIS } from '../utils/customAvatars';
 import {
   playNotificationSound,
   sendBrowserNotification,
+  scheduleBackgroundNotification,
   requestNotificationPermission,
   getNotificationPermission,
   isInIframe,
@@ -45,6 +46,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [scheduledCountdown, setScheduledCountdown] = useState<number | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -317,74 +319,118 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   </span>
                 </div>
 
-                <div className="flex gap-2 pt-0.5">
-                  {getNotificationPermission() !== 'granted' && (
+                <div className="flex flex-col gap-2 pt-0.5">
+                  <div className="flex gap-2">
+                    {getNotificationPermission() !== 'granted' && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            setErrorMsg(null);
+                            const perm = await requestNotificationPermission();
+                            if (perm === 'granted') {
+                              setSuccessMsg('Notificações ativadas com sucesso!');
+                              playNotificationSound();
+                              sendBrowserNotification('Blá Blá', {
+                                body: '🎉 Notificações do sistema ativadas!',
+                                icon: activeUser.profile_photo || '/icon-192.png',
+                                tag: 'perm_granted',
+                              });
+                              setTimeout(() => setSuccessMsg(null), 3500);
+                            } else if (isIOS() && !isStandalone()) {
+                              setSuccessMsg(
+                                '📱 No iPhone: Toque no botão Compartilhar 📤 no Safari e escolha "Adicionar à Tela de Início" para ativar notificações.'
+                              );
+                              setTimeout(() => setSuccessMsg(null), 6000);
+                            } else {
+                              setErrorMsg('Permissão de notificação não foi concedida no navegador.');
+                              setTimeout(() => setErrorMsg(null), 4000);
+                            }
+                          } catch {
+                            setErrorMsg('Não foi possível solicitar permissão neste navegador.');
+                            setTimeout(() => setErrorMsg(null), 4000);
+                          }
+                        }}
+                        className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-2xs transition-all cursor-pointer text-center"
+                      >
+                        Permitir Notificações
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       onClick={async () => {
-                        try {
-                          setErrorMsg(null);
-                          const perm = await requestNotificationPermission();
-                          if (perm === 'granted') {
-                            setSuccessMsg('Notificações ativadas com sucesso!');
-                            playNotificationSound();
-                            sendBrowserNotification('Blá Blá', {
-                              body: '🎉 Notificações do sistema ativadas!',
-                              icon: activeUser.profile_photo || '/icon-192.png',
-                              tag: 'perm_granted',
-                            });
-                            setTimeout(() => setSuccessMsg(null), 3500);
-                          } else if (isIOS() && !isStandalone()) {
-                            setSuccessMsg(
-                              '📱 No iPhone: Toque no botão Compartilhar 📤 no Safari e escolha "Adicionar à Tela de Início" para ativar notificações.'
-                            );
-                            setTimeout(() => setSuccessMsg(null), 6000);
-                          } else {
-                            setErrorMsg('Permissão de notificação não foi concedida no navegador.');
-                            setTimeout(() => setErrorMsg(null), 4000);
-                          }
-                        } catch {
-                          setErrorMsg('Não foi possível solicitar permissão neste navegador.');
-                          setTimeout(() => setErrorMsg(null), 4000);
-                        }
-                      }}
-                      className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-2xs transition-all cursor-pointer text-center"
-                    >
-                      Permitir Notificações
-                    </button>
-                  )}
+                        setErrorMsg(null);
+                        // 1. Play sound synchronously on user click
+                        playNotificationSound();
 
+                        // 2. Trigger in-app WhatsApp-style banner
+                        if (onTestNotification) {
+                          onTestNotification();
+                        }
+
+                        // 3. Dispatch native system notification
+                        const sent = await sendBrowserNotification('@suporte_blabla (Blá Blá)', {
+                          body: '👋 Nova mensagem recebida no Blá Blá!',
+                          icon: activeUser.profile_photo || '/icon-192.png',
+                          tag: 'test_notification',
+                        });
+
+                        if (sent) {
+                          setSuccessMsg('Notificação e toque disparados!');
+                        } else {
+                          setSuccessMsg('Toque e aviso de teste disparados!');
+                        }
+
+                        setTimeout(() => setSuccessMsg(null), 3500);
+                      }}
+                      className="flex-1 py-2 px-3 bg-white hover:bg-gray-50 active:bg-gray-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center shadow-2xs flex items-center justify-center gap-1.5"
+                    >
+                      <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Testar no App</span>
+                    </button>
+                  </div>
+
+                  {/* Scheduled test button for background/locked screen */}
                   <button
                     type="button"
+                    disabled={scheduledCountdown !== null}
                     onClick={async () => {
                       setErrorMsg(null);
-                      // 1. Play sound synchronously on user click
-                      playNotificationSound();
+                      setScheduledCountdown(5);
+                      setSuccessMsg('⏳ Bloqueie a tela ou saia do app agora! Notificação em 5s...');
 
-                      // 2. Trigger in-app WhatsApp-style banner
-                      if (onTestNotification) {
-                        onTestNotification();
-                      }
+                      // Schedule in Service Worker
+                      await scheduleBackgroundNotification(
+                        '💬 @amigo (Blá Blá)',
+                        {
+                          body: 'Oi! Mensagem recebida enquanto você estava fora!',
+                          icon: activeUser.profile_photo || '/icon-192.png',
+                          tag: 'background_test_notif',
+                        },
+                        5000,
+                      );
 
-                      // 3. Dispatch native system notification
-                      const sent = await sendBrowserNotification('@exemplo (Blá Blá)', {
-                        body: '👋 Esta é uma notificação de teste no Blá Blá!',
-                        icon: activeUser.profile_photo || '/icon-192.png',
-                        tag: 'test_notification',
-                      });
-
-                      if (sent) {
-                        setSuccessMsg('Som tocado e notificação enviada para a barra de status!');
-                      } else {
-                        setSuccessMsg('Som e banner de teste disparados com sucesso!');
-                      }
-
-                      setTimeout(() => setSuccessMsg(null), 3500);
+                      let current = 5;
+                      const interval = setInterval(() => {
+                        current -= 1;
+                        if (current <= 0) {
+                          clearInterval(interval);
+                          setScheduledCountdown(null);
+                          setSuccessMsg('Notificação enviada para a barra de status do celular!');
+                          setTimeout(() => setSuccessMsg(null), 4000);
+                        } else {
+                          setScheduledCountdown(current);
+                        }
+                      }, 1000);
                     }}
-                    className="flex-1 py-2 px-3 bg-white hover:bg-gray-50 active:bg-gray-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center shadow-2xs flex items-center justify-center gap-1.5"
+                    className="w-full py-2 px-3 bg-emerald-100/70 hover:bg-emerald-100 text-emerald-900 border border-emerald-300/80 rounded-xl text-xs font-bold transition-all cursor-pointer text-center shadow-2xs flex items-center justify-center gap-1.5"
                   >
-                    <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Testar Notificação</span>
+                    <span>
+                      {scheduledCountdown !== null
+                        ? `⏳ Saia do app / Bloqueie a tela (${scheduledCountdown}s)...`
+                        : '📲 Testar na Barra de Notificação (em 5s)'}
+                    </span>
                   </button>
                 </div>
 

@@ -36,6 +36,36 @@ self.addEventListener('notificationclick', (event) => {
   );
 });
 
+// Handle direct messages from app (e.g. test notification when app is minimized/locked)
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SHOW_NOTIFICATION') {
+    const { title, options } = event.data;
+    self.registration.showNotification(title || 'Blá Blá', {
+      body: options?.body || 'Nova mensagem recebida',
+      icon: options?.icon || '/icon-192.png',
+      badge: '/icon-192.png',
+      vibrate: [200, 100, 200],
+      tag: options?.tag || 'blabla-msg',
+      renotify: true,
+      data: options?.data || {},
+    });
+  } else if (event.data?.type === 'SCHEDULE_NOTIFICATION') {
+    const delay = event.data.delayMs || 5000;
+    const { title, options } = event.data;
+    setTimeout(() => {
+      self.registration.showNotification(title || 'Blá Blá', {
+        body: options?.body || 'Nova mensagem recebida',
+        icon: options?.icon || '/icon-192.png',
+        badge: '/icon-192.png',
+        vibrate: [200, 100, 200],
+        tag: options?.tag || 'blabla-msg',
+        renotify: true,
+        data: options?.data || {},
+      });
+    }, delay);
+  }
+});
+
 // Handle push events if configured
 self.addEventListener('push', (event) => {
   if (!event.data) return;

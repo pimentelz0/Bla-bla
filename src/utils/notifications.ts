@@ -233,6 +233,58 @@ export async function sendBrowserNotification(title: string, options: Notificati
   return false;
 }
 
+/**
+ * Schedules a notification to be shown in X milliseconds.
+ * Gives the user time to lock screen or minimize app so they can see the notification in system status bar.
+ */
+export async function scheduleBackgroundNotification(title: string, options: NotificationOptions, delayMs = 5000): Promise<boolean> {
+  if (!isNotificationSupported()) {
+    return false;
+  }
+
+  if (getNotificationPermission() === 'default') {
+    const newPerm = await requestNotificationPermission();
+    if (newPerm !== 'granted') return false;
+  }
+
+  if (getNotificationPermission() !== 'granted') {
+    return false;
+  }
+
+  const notificationTag = options.tag || (options.conversationId ? `chat_${options.conversationId}` : 'blabla_chat');
+  const iconUrl = options.icon || '/icon-192.png';
+
+  // Send schedule command to Service Worker
+  if ('serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if (reg.active) {
+        reg.active.postMessage({
+          type: 'SCHEDULE_NOTIFICATION',
+          delayMs,
+          title,
+          options: {
+            body: options.body,
+            icon: iconUrl,
+            tag: notificationTag,
+            data: { conversationId: options.conversationId },
+          },
+        });
+        return true;
+      }
+    } catch (err) {
+      console.debug('Could not send message to service worker:', err);
+    }
+  }
+
+  // Fallback setTimeout
+  setTimeout(() => {
+    sendBrowserNotification(title, options);
+  }, delayMs);
+
+  return true;
+}
+
 // Update Title with Unread Count & Badge
 export function updateAppBadgeAndTitle(unreadCount: number, previewSender?: string) {
   if (typeof document === 'undefined') return;
