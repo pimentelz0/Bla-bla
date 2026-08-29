@@ -71,6 +71,21 @@ export function createExpressApp(
 
   const app = express();
 
+  // URL normalization for Vercel rewrites and Serverless
+  app.use((req, res, next) => {
+    // 1. Check x-matched-path header from Vercel
+    const matchedPath = (req.headers['x-matched-path'] as string) || (req.headers['x-vercel-matched-path'] as string);
+    // 2. Check path query parameter
+    const pathQuery = req.query?.path as string;
+
+    if (pathQuery) {
+      req.url = `/api/${pathQuery.replace(/^\/+/, '')}`;
+    } else if (matchedPath && matchedPath.startsWith('/api')) {
+      req.url = matchedPath.split('?')[0];
+    }
+    next();
+  });
+
   // CORS and body parser
   app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
