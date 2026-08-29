@@ -1,7 +1,50 @@
-// Web Notification & Audio Chime Helper for WhatsApp-like alerts
+// Web & Mobile Notification & Audio Chime Helper for WhatsApp-like alerts
 
 let audioCtx: AudioContext | null = null;
+let isAudioUnlocked = false;
 
+// Register service worker if supported
+export function registerServiceWorker() {
+  if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker
+        .register('/sw.js')
+        .then((reg) => {
+          console.debug('Service Worker registered successfully for notifications:', reg.scope);
+        })
+        .catch((err) => {
+          console.debug('Service Worker registration skipped or failed:', err);
+        });
+    });
+  }
+}
+
+// Unlock audio context on first user interaction (touch or click anywhere)
+export function initAudioUnlock() {
+  if (typeof window === 'undefined') return;
+
+  const unlock = () => {
+    if (!audioCtx) {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioContextClass) {
+        audioCtx = new AudioContextClass();
+      }
+    }
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    isAudioUnlocked = true;
+    window.removeEventListener('click', unlock);
+    window.removeEventListener('touchstart', unlock);
+    window.removeEventListener('keydown', unlock);
+  };
+
+  window.addEventListener('click', unlock, { passive: true });
+  window.addEventListener('touchstart', unlock, { passive: true });
+  window.addEventListener('keydown', unlock, { passive: true });
+}
+
+// WhatsApp-like crisp, melodic two-tone chime
 export function playNotificationSound() {
   try {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -12,57 +55,58 @@ export function playNotificationSound() {
     }
 
     if (audioCtx.state === 'suspended') {
-      audioCtx.resume();
+      audioCtx.resume().catch(() => {});
     }
 
-    // WhatsApp-like two-tone melodic notification chime (high note -> smooth lower harmonic)
     const now = audioCtx.currentTime;
 
+    // Primary bright tone (A5 880Hz -> E6 1318.5Hz)
     const osc1 = audioCtx.createOscillator();
+    // Warm harmonic tone (1760Hz -> 2093Hz)
     const osc2 = audioCtx.createOscillator();
     const gainNode = audioCtx.createGain();
 
     osc1.type = 'sine';
-    osc2.type = 'triangle';
+    osc2.type = 'sine';
 
-    // Pleasant high melodic frequencies
-    osc1.frequency.setValueAtTime(880, now); // A5
-    osc1.frequency.exponentialRampToValueAtTime(1318.51, now + 0.08); // E6
+    // WhatsApp melodic pitch progression
+    osc1.frequency.setValueAtTime(920, now);
+    osc1.frequency.exponentialRampToValueAtTime(1380, now + 0.07);
 
-    osc2.frequency.setValueAtTime(1318.51, now + 0.08);
-    osc2.frequency.exponentialRampToValueAtTime(1760, now + 0.16); // A6
+    osc2.frequency.setValueAtTime(1380, now + 0.07);
+    osc2.frequency.exponentialRampToValueAtTime(1840, now + 0.15);
 
-    // Envelope
-    gainNode.gain.setValueAtTime(0.001, now);
-    gainNode.gain.linearRampToValueAtTime(0.28, now + 0.02);
-    gainNode.gain.exponentialRampToValueAtTime(0.15, now + 0.12);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.38);
+    // Dynamic envelope for a rounded, crisp pop chime
+    gainNode.gain.setValueAtTime(0.0001, now);
+    gainNode.gain.linearRampToValueAtTime(0.32, now + 0.015);
+    gainNode.gain.exponentialRampToValueAtTime(0.18, now + 0.08);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
 
     osc1.connect(gainNode);
     osc2.connect(gainNode);
     gainNode.connect(audioCtx.destination);
 
     osc1.start(now);
-    osc2.start(now + 0.08);
+    osc2.start(now + 0.06);
 
     osc1.stop(now + 0.12);
-    osc2.stop(now + 0.38);
+    osc2.stop(now + 0.35);
   } catch (err) {
-    console.debug('Notification audio not permitted or supported yet:', err);
+    console.debug('Notification audio play skipped:', err);
   }
 }
 
 export function isNotificationSupported(): boolean {
-  return typeof window !== 'undefined' && 'Notification' in window;
+  return typeof window !== 'undefined' && ('Notification' in window || 'serviceWorker' in navigator);
 }
 
 export function getNotificationPermission(): NotificationPermission {
-  if (!isNotificationSupported()) return 'denied';
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'denied';
   return Notification.permission;
 }
 
 export async function requestNotificationPermission(): Promise<NotificationPermission> {
-  if (!isNotificationSupported()) return 'denied';
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'denied';
   try {
     const perm = await Notification.requestPermission();
     return perm;
@@ -72,48 +116,110 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
   }
 }
 
-export function sendBrowserNotification(
-  title: string,
-  options: {
-    body: string;
-    icon?: string;
-    tag?: string;
-    onClick?: () => void;
-  },
-) {
-  if (!isNotificationSupported() || Notification.permission !== 'granted') {
+export interface NotificationOptions {
+  body: string;
+  icon?: string;
+  conversationId?: string;
+  tag?: string;
+  onClick?: () => void;
+}
+
+/**
+ * Sends a native system notification to the status bar (Android/Windows/Mac/Linux/iOS PWA)
+ */
+export async function sendBrowserNotification(title: string, options: NotificationOptions) {
+  if (!isNotificationSupported() || getNotificationPermission() !== 'granted') {
     return null;
   }
 
-  try {
-    const notif = new Notification(title, {
-      body: options.body,
-      icon: options.icon || '/favicon.ico',
-      badge: '/favicon.ico',
-      tag: options.tag || 'blabla-notification',
-      silent: false,
-    });
+  const notificationTag = options.tag || (options.conversationId ? `chat_${options.conversationId}` : 'blabla_chat');
+  const iconUrl = options.icon || '/icon-192.png';
 
-    if (window.navigator?.vibrate) {
-      window.navigator.vibrate([100, 50, 100]);
+  // Haptic feedback (Vibration)
+  try {
+    if (typeof window !== 'undefined' && window.navigator?.vibrate) {
+      window.navigator.vibrate([200, 100, 200]); // Standard WhatsApp vibration rhythm
+    }
+  } catch {
+    // ignore
+  }
+
+  // 1. Try Service Worker showNotification first (Works in background & mobile status bar)
+  if ('serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if (reg && reg.showNotification) {
+        await reg.showNotification(title, {
+          body: options.body,
+          icon: iconUrl,
+          badge: '/icon-192.png',
+          tag: notificationTag,
+          renotify: true,
+          vibrate: [200, 100, 200],
+          data: {
+            conversationId: options.conversationId,
+            timestamp: Date.now(),
+          },
+        } as any);
+        return true;
+      }
+    } catch (err) {
+      console.debug('Service Worker showNotification fallback to window.Notification:', err);
+    }
+  }
+
+  // 2. Direct Window Notification fallback
+  if ('Notification' in window) {
+    try {
+      const notif = new Notification(title, {
+        body: options.body,
+        icon: iconUrl,
+        badge: '/icon-192.png',
+        tag: notificationTag,
+        renotify: true,
+      } as any);
+
+      notif.onclick = () => {
+        window.focus();
+        if (options.onClick) {
+          options.onClick();
+        }
+        notif.close();
+      };
+
+      setTimeout(() => {
+        try {
+          notif.close();
+        } catch {}
+      }, 7000);
+
+      return notif;
+    } catch (err) {
+      console.warn('Could not display window notification:', err);
+    }
+  }
+
+  return null;
+}
+
+// Update Title with Unread Count & Badge
+export function updateAppBadgeAndTitle(unreadCount: number, previewSender?: string) {
+  if (typeof document === 'undefined') return;
+
+  if (unreadCount > 0) {
+    if (previewSender) {
+      document.title = `(${unreadCount}) 💬 @${previewSender} - Blá Blá`;
+    } else {
+      document.title = `(${unreadCount}) Blá Blá • Mensagens`;
     }
 
-    notif.onclick = () => {
-      window.focus();
-      if (options.onClick) {
-        options.onClick();
-      }
-      notif.close();
-    };
-
-    // Auto close notification after 6 seconds
-    setTimeout(() => {
-      notif.close();
-    }, 6000);
-
-    return notif;
-  } catch (err) {
-    console.warn('Could not display browser notification:', err);
-    return null;
+    if ('setAppBadge' in navigator) {
+      (navigator as any).setAppBadge(unreadCount).catch(() => {});
+    }
+  } else {
+    document.title = 'Blá Blá - Mensagens';
+    if ('clearAppBadge' in navigator) {
+      (navigator as any).clearAppBadge().catch(() => {});
+    }
   }
 }

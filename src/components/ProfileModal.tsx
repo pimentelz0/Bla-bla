@@ -283,6 +283,68 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 Editar perfil
               </button>
 
+              {/* Notification Settings & Test Box */}
+              <div className="p-3.5 bg-emerald-50/70 border border-emerald-100/90 rounded-2xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">🔔</span>
+                    <div>
+                      <p className="text-xs font-bold text-gray-900 leading-tight">Notificações WhatsApp</p>
+                      <p className="text-[11px] text-gray-500">Alertas na barra de status e som</p>
+                    </div>
+                  </div>
+                  <span className={`text-[10px] px-2 py-0.5 font-bold rounded-full uppercase tracking-wider ${
+                    typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted'
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}>
+                    {typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted'
+                      ? 'Ativadas'
+                      : 'Desativadas'}
+                  </span>
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  {typeof window !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted' && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const perm = await Notification.requestPermission();
+                          if (perm === 'granted') {
+                            setSuccessMsg('Notificações ativadas com sucesso!');
+                          }
+                        } catch {}
+                      }}
+                      className="flex-1 py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-2xs transition-all cursor-pointer text-center"
+                    >
+                      Permitir Notificações
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (typeof window !== 'undefined') {
+                        import('../utils/notifications').then(({ playNotificationSound, sendBrowserNotification }) => {
+                          playNotificationSound();
+                          sendBrowserNotification('@exemplo (Blá Blá)', {
+                            body: '👋 Esta é uma notificação de teste no estilo WhatsApp!',
+                            icon: activeUser.profile_photo || '/icon-192.png',
+                            tag: 'test_notification',
+                          });
+                        });
+                        setSuccessMsg('Notificação e som de teste disparados!');
+                        setTimeout(() => setSuccessMsg(null), 3000);
+                      }
+                    }}
+                    className="flex-1 py-1.5 px-3 bg-white hover:bg-gray-50 active:bg-gray-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center shadow-2xs"
+                  >
+                    Testar Notificação
+                  </button>
+                </div>
+              </div>
+
               <button
                 onClick={onLogout}
                 className="w-full py-3 px-4 bg-gray-50 hover:bg-rose-50 active:bg-rose-100 text-rose-600 font-semibold text-sm rounded-2xl transition-all flex items-center justify-center gap-2 border border-gray-100 cursor-pointer"

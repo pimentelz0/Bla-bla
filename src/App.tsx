@@ -18,6 +18,9 @@ import {
   isNotificationSupported,
   getNotificationPermission,
   requestNotificationPermission,
+  registerServiceWorker,
+  initAudioUnlock,
+  updateAppBadgeAndTitle,
 } from './utils/notifications';
 import { parseMessageContent } from './utils/mediaHelper';
 import { Search, Plus, MessageSquare, Users, Archive, ArrowLeft, Bell } from 'lucide-react';
@@ -34,7 +37,13 @@ export default function App() {
   // Conversations & Active Chat
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [isLoadingConversations, setIsLoadingConversations] = useState(false);
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('chat');
+    }
+    return null;
+  });
   const [activeMessages, setActiveMessages] = useState<Message[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
 
@@ -51,6 +60,34 @@ export default function App() {
   // Keep conversations ref for real-time handler lookup
   const conversationsRef = useRef<ConversationSummary[]>([]);
   conversationsRef.current = conversations;
+
+  // Initialize service worker & audio unlock on app mount
+  useEffect(() => {
+    registerServiceWorker();
+    initAudioUnlock();
+
+    // Listen for messages from Service Worker (e.g. user clicked notification)
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      const handleServiceWorkerMessage = (event: MessageEvent) => {
+        if (event.data?.type === 'OPEN_CONVERSATION' && event.data?.conversationId) {
+          setActiveConversationId(event.data.conversationId);
+          setIncomingNotification(null);
+        }
+      };
+
+      navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+      return () => {
+        navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+      };
+    }
+  }, []);
+
+  // Update App Badge and Document Title on conversations/unread update
+  useEffect(() => {
+    const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count || 0), 0);
+    const firstUnreadConv = conversations.find((c) => (c.unread_count || 0) > 0);
+    updateAppBadgeAndTitle(totalUnread, firstUnreadConv?.other_user.username);
+  }, [conversations]);
 
   const showToast = useCallback((text: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = `t_${Date.now()}_${Math.random()}`;
@@ -69,8 +106,12 @@ export default function App() {
     setNotificationPermission(perm);
     setShowNotificationPrompt(false);
     if (perm === 'granted') {
-      showToast('Notificações na barra de status ativadas!', 'success');
+      showToast('Notificações estilo WhatsApp ativadas!', 'success');
       playNotificationSound();
+      sendBrowserNotification('Blá Blá • WhatsApp', {
+        body: '🎉 Notificações na barra de status ativadas com sucesso!',
+        tag: 'welcome_notif',
+      });
     }
   };
 
@@ -542,20 +583,20 @@ export default function App() {
           <div className="flex-1 overflow-y-auto">
             {/* Notification Permission Request Prompt */}
             {showNotificationPrompt && (
-              <div className="mx-3 my-2.5 p-3 bg-blue-50/80 border border-blue-100 rounded-2xl flex items-center justify-between gap-2.5 shadow-2xs animate-fadeIn">
+              <div className="mx-3 my-2.5 p-3 bg-emerald-50/90 border border-emerald-100/90 rounded-2xl flex items-center justify-between gap-2.5 shadow-2xs animate-fadeIn">
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center shrink-0">
+                  <div className="w-8 h-8 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-2xs">
                     <Bell className="w-4 h-4" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs font-bold text-[#17191C] leading-tight">Receber notificações</p>
-                    <p className="text-[11px] text-[#7A7F87] leading-tight mt-0.5">Avise-me na barra de status quando chegar mensagem</p>
+                    <p className="text-xs font-bold text-[#17191C] leading-tight">Notificações estilo WhatsApp</p>
+                    <p className="text-[11px] text-[#4B5563] leading-tight mt-0.5">Alertas com som e vibração na barra de status</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     onClick={handleRequestNotificationPermission}
-                    className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white rounded-xl text-[11.5px] font-bold transition-all shadow-xs cursor-pointer"
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-[11.5px] font-bold transition-all shadow-xs cursor-pointer"
                   >
                     Ativar
                   </button>
