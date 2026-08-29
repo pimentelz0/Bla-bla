@@ -47,6 +47,14 @@ function hashPassword(pin: string, salt: string): string {
 
 const DEFAULT_AVATARS = INVENTED_EMOJIS.map((e) => e.url);
 
+export function isUserOnline(lastSeenIso?: string, onlineSet?: Set<string>, userId?: string): boolean {
+  if (onlineSet && userId && onlineSet.has(userId)) return true;
+  if (!lastSeenIso) return false;
+  const ts = new Date(lastSeenIso).getTime();
+  if (isNaN(ts)) return false;
+  return Date.now() - ts < 45 * 1000;
+}
+
 export function sanitizeUser(
   u: { id: string; username: string; profile_photo: string; created_at: string; updated_at: string; last_seen: string },
   onlineSet?: Set<string>,
@@ -58,7 +66,7 @@ export function sanitizeUser(
     created_at: u.created_at,
     updated_at: u.updated_at,
     last_seen: u.last_seen,
-    is_online: onlineSet ? onlineSet.has(u.id) : true,
+    is_online: isUserOnline(u.last_seen, onlineSet, u.id),
   };
 }
 
@@ -289,8 +297,29 @@ export function createExpressApp(
     return res.json({ user: sanitizeUser(user, getOnlineUserIds()) });
   });
 
+  app.post(['/api/auth/heartbeat', '/auth/heartbeat'], authenticate, async (req, res) => {
+    const user = (req as any).user as DbUser;
+    const now = new Date().toISOString();
+    await dbUpdateUserLastSeen(user.id, now);
+    user.last_seen = now;
+    return res.json({ success: true, last_seen: now });
+  });
+
+  app.post(['/api/auth/offline', '/auth/offline'], authenticate, async (req, res) => {
+    const user = (req as any).user as DbUser;
+    const oldTime = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    await dbUpdateUserLastSeen(user.id, oldTime);
+    user.last_seen = oldTime;
+    return res.json({ success: true });
+  });
+
   app.post(['/api/auth/logout', '/auth/logout'], authenticate, async (req, res) => {
+    const user = (req as any).user as DbUser;
     const token = (req as any).token as string;
+    if (user?.id) {
+      const oldTime = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+      await dbUpdateUserLastSeen(user.id, oldTime);
+    }
     await dbDeleteToken(token);
     return res.json({ success: true });
   });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { User, ConversationSummary, Message, SearchUserResult } from './types';
 import { api, getStoredUser, clearStoredAuth } from './services/api';
 import { useSocket } from './services/useSocket';
@@ -11,7 +11,16 @@ import { ProfileModal } from './components/ProfileModal';
 import { AuthScreen } from './components/AuthScreen';
 import { ConversationActionMenu } from './components/ConversationActionMenu';
 import { ToastContainer, ToastMessage } from './components/Toast';
-import { Search, Plus, MessageSquare, Users, Archive, ArrowLeft } from 'lucide-react';
+import { NotificationBanner, IncomingNotification } from './components/NotificationBanner';
+import {
+  playNotificationSound,
+  sendBrowserNotification,
+  isNotificationSupported,
+  getNotificationPermission,
+  requestNotificationPermission,
+} from './utils/notifications';
+import { parseMessageContent } from './utils/mediaHelper';
+import { Search, Plus, MessageSquare, Users, Archive, ArrowLeft, Bell } from 'lucide-react';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(getStoredUser());
@@ -29,8 +38,19 @@ export default function App() {
   const [activeMessages, setActiveMessages] = useState<Message[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
 
+  // Notifications
+  const [incomingNotification, setIncomingNotification] = useState<IncomingNotification | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(getNotificationPermission());
+  const [showNotificationPrompt, setShowNotificationPrompt] = useState(
+    isNotificationSupported() && getNotificationPermission() === 'default'
+  );
+
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  // Keep conversations ref for real-time handler lookup
+  const conversationsRef = useRef<ConversationSummary[]>([]);
+  conversationsRef.current = conversations;
 
   const showToast = useCallback((text: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = `t_${Date.now()}_${Math.random()}`;
@@ -42,6 +62,16 @@ export default function App() {
 
   const dismissToast = (id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const handleRequestNotificationPermission = async () => {
+    const perm = await requestNotificationPermission();
+    setNotificationPermission(perm);
+    setShowNotificationPrompt(false);
+    if (perm === 'granted') {
+      showToast('Notificações na barra de status ativadas!', 'success');
+      playNotificationSound();
+    }
   };
 
   // Check auth session silently in background on load
@@ -113,9 +143,12 @@ export default function App() {
 
   // Real-time WebSocket Handlers
   const handleNewMessage = useCallback(
-    (msg: Message, conversationId: string) => {
-      // If currently inside the active chat
-      if (activeConversationId === conversationId) {
+    (msg: Message, conversationId: string, senderUser?: User) => {
+      const isFromOtherUser = msg.sender_id !== currentUser?.id;
+      const isCurrentlyActive = activeConversationId === conversationId;
+
+      // 1. If currently inside the active chat
+      if (isCurrentlyActive) {
         setActiveMessages((prev) => {
           if (prev.some((m) => m.id === msg.id)) return prev;
           return [...prev, msg];
@@ -125,12 +158,56 @@ export default function App() {
         }
       }
 
-      // Update conversations list
+      // 2. Notification handling (Audio, Native Notification Bar & In-app Banner)
+      if (isFromOtherUser) {
+        const existingConv = conversationsRef.current.find((c) => c.id === conversationId);
+        const isMuted = existingConv?.is_muted;
+        const sender = senderUser || existingConv?.other_user;
+
+        if (!isMuted) {
+          // Melodic WhatsApp sound chime
+          playNotificationSound();
+
+          const parsed = parseMessageContent(msg.message);
+          const previewText =
+            parsed.type === 'image'
+              ? '📷 Foto'
+              : parsed.type === 'audio'
+              ? '🎤 Mensagem de voz'
+              : parsed.type === 'sticker'
+              ? '🎭 Figurinha'
+              : msg.message;
+
+          const senderName = sender?.username ? `@${sender.username}` : 'Nova mensagem';
+
+          // Native Browser / System Notification Bar
+          sendBrowserNotification(senderName, {
+            body: previewText,
+            icon: sender?.profile_photo,
+            tag: `blabla_${conversationId}`,
+            onClick: () => {
+              setActiveConversationId(conversationId);
+            },
+          });
+
+          // In-App Notification Banner if not looking at this chat
+          if (!isCurrentlyActive && sender) {
+            setIncomingNotification({
+              id: msg.id,
+              conversationId,
+              sender,
+              message: msg,
+              receivedAt: new Date(),
+            });
+          }
+        }
+      }
+
+      // 3. Update conversations list
       setConversations((prev) => {
         const existingIdx = prev.findIndex((c) => c.id === conversationId);
         if (existingIdx !== -1) {
           const existing = prev[existingIdx];
-          const isCurrentlyActive = activeConversationId === conversationId;
           const updatedConv: ConversationSummary = {
             ...existing,
             last_message: msg.message,
@@ -463,6 +540,36 @@ export default function App() {
 
           {/* Conversations Scroll Area */}
           <div className="flex-1 overflow-y-auto">
+            {/* Notification Permission Request Prompt */}
+            {showNotificationPrompt && (
+              <div className="mx-3 my-2.5 p-3 bg-blue-50/80 border border-blue-100 rounded-2xl flex items-center justify-between gap-2.5 shadow-2xs animate-fadeIn">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center shrink-0">
+                    <Bell className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-[#17191C] leading-tight">Receber notificações</p>
+                    <p className="text-[11px] text-[#7A7F87] leading-tight mt-0.5">Avise-me na barra de status quando chegar mensagem</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={handleRequestNotificationPermission}
+                    className="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white rounded-xl text-[11.5px] font-bold transition-all shadow-xs cursor-pointer"
+                  >
+                    Ativar
+                  </button>
+                  <button
+                    onClick={() => setShowNotificationPrompt(false)}
+                    className="p-1 text-gray-400 hover:text-gray-600 rounded-lg text-xs"
+                    title="Agora não"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Archived Chats Access Bar (if not currently in archived view) */}
             {!showArchivedView && archivedCount > 0 && (
               <button
@@ -639,6 +746,16 @@ export default function App() {
           showToast('Perfil atualizado com sucesso!', 'success');
         }}
         onLogout={handleLogout}
+      />
+
+      {/* Real-time In-App Push Notification Banner */}
+      <NotificationBanner
+        notification={incomingNotification}
+        onDismiss={() => setIncomingNotification(null)}
+        onOpenConversation={(convId) => {
+          setActiveConversationId(convId);
+          setIncomingNotification(null);
+        }}
       />
     </div>
   );

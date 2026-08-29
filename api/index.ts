@@ -894,14 +894,26 @@ const DEFAULT_AVATARS = [
   'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
 ];
 
-function sanitizeUser(u: {
-  id: string;
-  username: string;
-  profile_photo: string;
-  created_at: string;
-  updated_at: string;
-  last_seen: string;
-}) {
+function isUserOnline(lastSeenIso?: string): boolean {
+  if (!lastSeenIso) return false;
+  const ts = new Date(lastSeenIso).getTime();
+  if (isNaN(ts)) return false;
+  // Consider user online if active within last 45 seconds
+  return Date.now() - ts < 45 * 1000;
+}
+
+function sanitizeUser(
+  u: {
+    id: string;
+    username: string;
+    profile_photo: string;
+    created_at: string;
+    updated_at: string;
+    last_seen: string;
+  },
+  isExplicitOnline?: boolean,
+) {
+  const online = isExplicitOnline !== undefined ? isExplicitOnline : isUserOnline(u.last_seen);
   return {
     id: u.id,
     username: u.username,
@@ -909,7 +921,7 @@ function sanitizeUser(u: {
     created_at: u.created_at,
     updated_at: u.updated_at,
     last_seen: u.last_seen,
-    is_online: true,
+    is_online: online,
   };
 }
 
@@ -1201,11 +1213,29 @@ export default async function handler(req: any, res: any) {
       const now = new Date().toISOString();
       await dbUpdateUserLastSeen(user.id, now);
       user.last_seen = now;
-      return sendJson(res, 200, { user: sanitizeUser(user) });
+      return sendJson(res, 200, { user: sanitizeUser(user, true) });
+    }
+
+    // 5.1 Heartbeat
+    if (pathname === '/api/auth/heartbeat' && method === 'POST') {
+      const now = new Date().toISOString();
+      await dbUpdateUserLastSeen(user.id, now);
+      user.last_seen = now;
+      return sendJson(res, 200, { success: true, last_seen: now });
+    }
+
+    // 5.2 Offline (when leaving the app)
+    if (pathname === '/api/auth/offline' && method === 'POST') {
+      const oldTime = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+      await dbUpdateUserLastSeen(user.id, oldTime);
+      user.last_seen = oldTime;
+      return sendJson(res, 200, { success: true });
     }
 
     // 6. Logout
     if (pathname === '/api/auth/logout' && method === 'POST') {
+      const oldTime = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+      await dbUpdateUserLastSeen(user.id, oldTime);
       await dbDeleteToken(token);
       return sendJson(res, 200, { success: true });
     }

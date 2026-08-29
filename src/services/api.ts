@@ -107,6 +107,24 @@ export const api = {
     throw new Error('Não foi possível obter os dados do usuário.');
   },
 
+  async heartbeat(): Promise<{ success: boolean; last_seen?: string }> {
+    try {
+      return await fetchWithAuth<{ success: boolean; last_seen?: string }>('/api/auth/heartbeat', {
+        method: 'POST',
+      });
+    } catch {
+      return { success: false };
+    }
+  },
+
+  async setOffline(): Promise<void> {
+    try {
+      await fetchWithAuth('/api/auth/offline', { method: 'POST' });
+    } catch {
+      // ignore
+    }
+  },
+
   async logout(): Promise<void> {
     try {
       await fetchWithAuth('/api/auth/logout', { method: 'POST' });

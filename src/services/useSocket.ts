@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { getStoredToken } from './api';
+import { getStoredToken, api } from './api';
 import { Message, User } from '../types';
 import { createClient } from '@supabase/supabase-js';
 
@@ -12,7 +12,7 @@ const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 
 interface UseSocketProps {
   currentUser: User | null;
-  onNewMessage?: (msg: Message, conversationId: string, sender: User) => void;
+  onNewMessage?: (msg: Message, conversationId: string, sender?: User) => void;
   onMessageRead?: (conversationId: string, readerId: string) => void;
   onPresenceUpdate?: (userId: string, isOnline: boolean, lastSeen: string) => void;
 }
@@ -25,6 +25,7 @@ export function useSocket({
 }: UseSocketProps) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
+  const heartbeatIntervalRef = useRef<number | null>(null);
 
   // Keep callback refs fresh
   const onNewMessageRef = useRef(onNewMessage);
@@ -36,11 +37,11 @@ export function useSocket({
   const onPresenceUpdateRef = useRef(onPresenceUpdate);
   onPresenceUpdateRef.current = onPresenceUpdate;
 
-  // Supabase Realtime Channel for Vercel / serverless deployments
+  // 1. Supabase Realtime Message Sync
   useEffect(() => {
     if (!currentUser) return;
 
-    const channel = supabaseClient
+    const messageChannel = supabaseClient
       .channel('public:messages')
       .on(
         'postgres_changes',
@@ -57,32 +58,119 @@ export function useSocket({
               created_at: newRow.created_at,
               read: newRow.read,
             };
-            const senderUser: User = {
-              id: newRow.sender_id,
-              username: 'Usuário',
-              profile_photo: '',
-              created_at: '',
-              updated_at: '',
-              last_seen: '',
-              is_online: true,
-            };
-            onNewMessageRef.current?.(msg, newRow.conversation_id, senderUser);
+            onNewMessageRef.current?.(msg, newRow.conversation_id);
           }
         },
       )
       .subscribe();
 
     return () => {
-      supabaseClient.removeChannel(channel);
+      supabaseClient.removeChannel(messageChannel);
     };
   }, [currentUser]);
 
+  // 2. Supabase Realtime Presence Sync (Accurate Online / Offline detection across all devices)
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const presenceChannel = supabaseClient.channel('presence:online_users', {
+      config: {
+        presence: {
+          key: currentUser.id,
+        },
+      },
+    });
+
+    presenceChannel
+      .on('presence', { event: 'sync' }, () => {
+        const state = presenceChannel.presenceState();
+        const onlineUserIds = new Set(Object.keys(state));
+        const now = new Date().toISOString();
+        
+        onlineUserIds.forEach((uid) => {
+          if (uid !== currentUser.id) {
+            onPresenceUpdateRef.current?.(uid, true, now);
+          }
+        });
+      })
+      .on('presence', { event: 'join' }, ({ key }) => {
+        if (key && key !== currentUser.id) {
+          onPresenceUpdateRef.current?.(key, true, new Date().toISOString());
+        }
+      })
+      .on('presence', { event: 'leave' }, ({ key }) => {
+        if (key && key !== currentUser.id) {
+          onPresenceUpdateRef.current?.(key, false, new Date().toISOString());
+        }
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await presenceChannel.track({
+            user_id: currentUser.id,
+            username: currentUser.username,
+            online_at: new Date().toISOString(),
+          });
+        }
+      });
+
+    return () => {
+      presenceChannel.untrack();
+      supabaseClient.removeChannel(presenceChannel);
+    };
+  }, [currentUser]);
+
+  // 3. Heartbeat & Page Lifecycle (Only online when actively in the app)
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const sendPulse = async () => {
+      if (document.visibilityState === 'visible') {
+        await api.heartbeat();
+      }
+    };
+
+    // Initial pulse
+    sendPulse();
+
+    // Heartbeat every 20 seconds
+    heartbeatIntervalRef.current = window.setInterval(sendPulse, 20000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        sendPulse();
+      } else {
+        // When tab is hidden/minimized, update last_seen
+        api.heartbeat();
+      }
+    };
+
+    const handleBeforeUnload = () => {
+      if (currentUser) {
+        // Best effort to set offline immediately when tab closes
+        navigator.sendBeacon?.('/api/auth/offline');
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handleBeforeUnload);
+
+    return () => {
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current);
+      }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handleBeforeUnload);
+    };
+  }, [currentUser]);
+
+  // 4. WebSocket fallback for full-stack Node.js server
   const connect = useCallback(() => {
     if (!currentUser) return;
     const token = getStoredToken();
     if (!token) return;
 
-    // Only attempt WebSocket if not on pure static hosting or fallback
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}`;
 
@@ -91,7 +179,6 @@ export function useSocket({
       wsRef.current = ws;
 
       ws.onopen = () => {
-        // Authenticate socket
         ws.send(JSON.stringify({ type: 'auth', token }));
       };
 
