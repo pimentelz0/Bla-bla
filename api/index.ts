@@ -256,6 +256,19 @@ CREATE POLICY "Allow all on pins" ON public.pins FOR ALL USING (true) WITH CHECK
 
 DROP POLICY IF EXISTS "Allow all on auth_tokens" ON public.auth_tokens;
 CREATE POLICY "Allow all on auth_tokens" ON public.auth_tokens FOR ALL USING (true) WITH CHECK (true);
+
+-- Garantir permissões de API para as roles públicas e autenticadas do Supabase
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role, postgres;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role, postgres;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role, postgres;
+GRANT ALL ON ALL ROUTINES IN SCHEMA public TO anon, authenticated, service_role, postgres;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authenticated, service_role, postgres;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role, postgres;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO anon, authenticated, service_role, postgres;
+
+-- Forçar o Supabase PostgREST a recarregar o cache de tabelas
+NOTIFY pgrst, 'reload schema';
 `;
 
 const memoryFallback = {
