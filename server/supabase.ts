@@ -1,11 +1,26 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-export const SUPABASE_URL = (
+function sanitizeSupabaseUrl(inputUrl?: string): string {
+  const fallback = 'https://myoicywulrrzfohlsjfe.supabase.co';
+  if (!inputUrl || typeof inputUrl !== 'string') return fallback;
+  const trimmed = inputUrl.trim();
+  try {
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      const parsed = new URL(trimmed);
+      return parsed.origin;
+    }
+  } catch {
+    // fallback
+  }
+  return trimmed.replace(/\/+$/, '');
+}
+
+export const SUPABASE_URL = sanitizeSupabaseUrl(
   process.env.SUPABASE_URL ||
   process.env.VITE_SUPABASE_URL ||
   process.env.NEXT_PUBLIC_SUPABASE_URL ||
   'https://myoicywulrrzfohlsjfe.supabase.co'
-).trim().replace(/\/+$/, '');
+);
 
 // Prioritize Service Role Key on backend (bypasses RLS safely on server) if provided, otherwise Anon Key
 const serviceRoleKey = (
@@ -101,12 +116,14 @@ function parseSupabaseError(tableName: string, operation: string, err: any): Sup
     return new SupabaseRLSError(tableName, operation, msg, code);
   }
 
-  // Missing table codes (PGRST205, 42P01, relation does not exist, could not find the table)
+  // Missing table codes (PGRST205, PGRST125, 42P01, relation does not exist, could not find the table, invalid path)
   if (
     code === 'PGRST205' ||
+    code === 'PGRST125' ||
     code === '42P01' ||
-    msg.toLowerCase().includes('relation') && msg.toLowerCase().includes('does not exist') ||
-    msg.toLowerCase().includes('could not find the table')
+    (msg.toLowerCase().includes('relation') && msg.toLowerCase().includes('does not exist')) ||
+    msg.toLowerCase().includes('could not find the table') ||
+    msg.toLowerCase().includes('invalid path specified in request url')
   ) {
     return new SupabaseTableNotFoundError(tableName, msg, code);
   }

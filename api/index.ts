@@ -14,12 +14,27 @@ console.log('[VERCEL_BOOT] environment check', {
 // SUPABASE DATABASE LOGIC (INLINED FOR VERCEL)
 // ==========================================
 
-export const SUPABASE_URL = (
+function sanitizeSupabaseUrl(inputUrl?: string): string {
+  const fallback = 'https://myoicywulrrzfohlsjfe.supabase.co';
+  if (!inputUrl || typeof inputUrl !== 'string') return fallback;
+  const trimmed = inputUrl.trim();
+  try {
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      const parsed = new URL(trimmed);
+      return parsed.origin;
+    }
+  } catch {
+    // fallback
+  }
+  return trimmed.replace(/\/+$/, '');
+}
+
+export const SUPABASE_URL = sanitizeSupabaseUrl(
   process.env.SUPABASE_URL ||
   process.env.VITE_SUPABASE_URL ||
   process.env.NEXT_PUBLIC_SUPABASE_URL ||
   'https://myoicywulrrzfohlsjfe.supabase.co'
-).trim().replace(/\/+$/, '');
+);
 
 const serviceRoleKey = (
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
@@ -113,9 +128,11 @@ function parseSupabaseError(tableName: string, operation: string, err: any): Sup
 
   if (
     code === 'PGRST205' ||
+    code === 'PGRST125' ||
     code === '42P01' ||
     (msg.toLowerCase().includes('relation') && msg.toLowerCase().includes('does not exist')) ||
-    msg.toLowerCase().includes('could not find the table')
+    msg.toLowerCase().includes('could not find the table') ||
+    msg.toLowerCase().includes('invalid path specified in request url')
   ) {
     return new SupabaseTableNotFoundError(tableName, msg, code);
   }
