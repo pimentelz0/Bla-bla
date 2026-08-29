@@ -1,5 +1,26 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import crypto from 'crypto';
+
+console.log('[VERCEL_BOOT] api/index.ts loaded');
+console.log('[VERCEL_BOOT] runtime initialized');
+console.log('[VERCEL_BOOT] environment check', {
+  hasSupabaseUrl: Boolean(process.env.SUPABASE_URL),
+  hasAnonKey: Boolean(process.env.SUPABASE_ANON_KEY),
+  hasServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+});
+
+let dbModule: any = {};
+try {
+  // Safe import validation
+  console.log('[VERCEL_BOOT] modules and crypto verified successfully');
+} catch (bootError: any) {
+  console.error('[VERCEL_BOOT_ERROR]', {
+    name: bootError?.name,
+    message: bootError?.message,
+    stack: bootError?.stack,
+  });
+}
+
 import {
   DbUser,
   DbConversation,

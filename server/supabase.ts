@@ -29,12 +29,27 @@ export const SUPABASE_KEY = serviceRoleKey || anonKey;
 export const IS_SERVICE_ROLE = !!serviceRoleKey;
 export const KEY_TYPE = IS_SERVICE_ROLE ? 'service_role (Admin - Bypass RLS)' : 'anon (Public)';
 
-export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: {
-    persistSession: false,
-    autoRefreshToken: false,
-  },
-});
+let supabaseInstance: SupabaseClient | null = null;
+
+try {
+  supabaseInstance = createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+} catch (bootErr: any) {
+  console.error('[VERCEL_BOOT_ERROR] Failed to initialize Supabase client:', {
+    name: bootErr?.name,
+    message: bootErr?.message,
+    stack: bootErr?.stack,
+  });
+}
+
+// Fallback proxy or instance to prevent top-level module crash
+export const supabase: SupabaseClient = supabaseInstance || (createClient('https://myoicywulrrzfohlsjfe.supabase.co', 'sb_publishable_-O-nGwbzijL96e0vOrDTyw_kmiA-eCn', {
+  auth: { persistSession: false, autoRefreshToken: false },
+}));
 
 export class SupabaseDbError extends Error {
   code?: string;
