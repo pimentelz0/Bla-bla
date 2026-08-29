@@ -12,7 +12,10 @@ export function isInIframe(): boolean {
 
 export function isIOS(): boolean {
   if (typeof window === 'undefined') return false;
-  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
 }
 
 export function isStandalone(): boolean {
@@ -23,20 +26,25 @@ export function isStandalone(): boolean {
   );
 }
 
-// Register service worker if supported
-export function registerServiceWorker() {
-  if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker
-        .register('/sw.js')
-        .then((reg) => {
-          console.debug('Service Worker registered successfully for notifications:', reg.scope);
-        })
-        .catch((err) => {
-          console.debug('Service Worker registration skipped or failed:', err);
-        });
-    });
+// Register service worker immediately and return the registration
+export async function registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return null;
   }
+
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    console.debug('Service Worker registered successfully:', reg.scope);
+    return reg;
+  } catch (err) {
+    console.debug('Service Worker registration skipped or failed:', err);
+    return null;
+  }
+}
+
+// Auto-register immediately on script evaluation
+if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  registerServiceWorker();
 }
 
 // Unlock audio context on first user interaction (touch or click anywhere)

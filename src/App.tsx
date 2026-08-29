@@ -787,31 +787,6 @@ export default function App() {
           showToast('Perfil atualizado com sucesso!', 'success');
         }}
         onLogout={handleLogout}
-        onTestNotification={() => {
-          setIncomingNotification({
-            id: `test_${Date.now()}`,
-            conversationId: conversations[0]?.id || 'demo_chat',
-            sender: {
-              id: 'test_user',
-              username: 'suporte_blabla',
-              profile_photo:
-                'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-              last_seen: new Date().toISOString(),
-              is_online: true,
-            },
-            message: {
-              id: `test_msg_${Date.now()}`,
-              conversation_id: conversations[0]?.id || 'demo_chat',
-              sender_id: 'test_user',
-              message: '👋 Olá! Esta é uma notificação no estilo WhatsApp funcionando!',
-              created_at: new Date().toISOString(),
-              read: false,
-            },
-            receivedAt: new Date(),
-          });
-        }}
       />
 
       {/* Real-time In-App Push Notification Banner */}
