@@ -114,7 +114,7 @@ export const NotificationBanner: React.FC<NotificationBannerProps> = ({
                   @{notification.sender.username}
                 </span>
                 <span className="text-[10px] px-1.5 py-0.5 bg-emerald-50 text-emerald-700 font-semibold rounded-full uppercase tracking-wider">
-                  WhatsApp • Blá Blá
+                  Blá Blá
                 </span>
               </div>
               <span className="text-[11px] text-gray-400 font-medium shrink-0">agora</span>

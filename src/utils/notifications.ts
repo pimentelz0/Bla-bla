@@ -1,7 +1,27 @@
 // Web & Mobile Notification & Audio Chime Helper for WhatsApp-like alerts
 
 let audioCtx: AudioContext | null = null;
-let isAudioUnlocked = false;
+
+export function isInIframe(): boolean {
+  try {
+    return typeof window !== 'undefined' && window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
+export function isIOS(): boolean {
+  if (typeof window === 'undefined') return false;
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+export function isStandalone(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (
+    ('standalone' in window.navigator && Boolean((window.navigator as any).standalone)) ||
+    window.matchMedia('(display-mode: standalone)').matches
+  );
+}
 
 // Register service worker if supported
 export function registerServiceWorker() {
@@ -24,16 +44,17 @@ export function initAudioUnlock() {
   if (typeof window === 'undefined') return;
 
   const unlock = () => {
-    if (!audioCtx) {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      if (AudioContextClass) {
-        audioCtx = new AudioContextClass();
+    try {
+      if (!audioCtx) {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioContextClass) {
+          audioCtx = new AudioContextClass();
+        }
       }
-    }
-    if (audioCtx && audioCtx.state === 'suspended') {
-      audioCtx.resume();
-    }
-    isAudioUnlocked = true;
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    } catch {}
     window.removeEventListener('click', unlock);
     window.removeEventListener('touchstart', unlock);
     window.removeEventListener('keydown', unlock);
@@ -50,7 +71,7 @@ export function playNotificationSound() {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContextClass) return;
 
-    if (!audioCtx) {
+    if (!audioCtx || audioCtx.state === 'closed') {
       audioCtx = new AudioContextClass();
     }
 
@@ -70,27 +91,27 @@ export function playNotificationSound() {
     osc2.type = 'sine';
 
     // WhatsApp melodic pitch progression
-    osc1.frequency.setValueAtTime(920, now);
-    osc1.frequency.exponentialRampToValueAtTime(1380, now + 0.07);
+    osc1.frequency.setValueAtTime(950, now);
+    osc1.frequency.exponentialRampToValueAtTime(1420, now + 0.08);
 
-    osc2.frequency.setValueAtTime(1380, now + 0.07);
-    osc2.frequency.exponentialRampToValueAtTime(1840, now + 0.15);
+    osc2.frequency.setValueAtTime(1420, now + 0.08);
+    osc2.frequency.exponentialRampToValueAtTime(1900, now + 0.16);
 
     // Dynamic envelope for a rounded, crisp pop chime
     gainNode.gain.setValueAtTime(0.0001, now);
-    gainNode.gain.linearRampToValueAtTime(0.32, now + 0.015);
-    gainNode.gain.exponentialRampToValueAtTime(0.18, now + 0.08);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+    gainNode.gain.linearRampToValueAtTime(0.45, now + 0.015);
+    gainNode.gain.exponentialRampToValueAtTime(0.25, now + 0.09);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.38);
 
     osc1.connect(gainNode);
     osc2.connect(gainNode);
     gainNode.connect(audioCtx.destination);
 
     osc1.start(now);
-    osc2.start(now + 0.06);
+    osc2.start(now + 0.07);
 
-    osc1.stop(now + 0.12);
-    osc2.stop(now + 0.35);
+    osc1.stop(now + 0.14);
+    osc2.stop(now + 0.38);
   } catch (err) {
     console.debug('Notification audio play skipped:', err);
   }
@@ -127,9 +148,19 @@ export interface NotificationOptions {
 /**
  * Sends a native system notification to the status bar (Android/Windows/Mac/Linux/iOS PWA)
  */
-export async function sendBrowserNotification(title: string, options: NotificationOptions) {
-  if (!isNotificationSupported() || getNotificationPermission() !== 'granted') {
-    return null;
+export async function sendBrowserNotification(title: string, options: NotificationOptions): Promise<boolean> {
+  if (!isNotificationSupported()) {
+    return false;
+  }
+
+  // If permission not requested yet, ask now
+  if (getNotificationPermission() === 'default') {
+    const newPerm = await requestNotificationPermission();
+    if (newPerm !== 'granted') return false;
+  }
+
+  if (getNotificationPermission() !== 'granted') {
+    return false;
   }
 
   const notificationTag = options.tag || (options.conversationId ? `chat_${options.conversationId}` : 'blabla_chat');
@@ -138,7 +169,7 @@ export async function sendBrowserNotification(title: string, options: Notificati
   // Haptic feedback (Vibration)
   try {
     if (typeof window !== 'undefined' && window.navigator?.vibrate) {
-      window.navigator.vibrate([200, 100, 200]); // Standard WhatsApp vibration rhythm
+      window.navigator.vibrate([200, 100, 200]);
     }
   } catch {
     // ignore
@@ -193,13 +224,13 @@ export async function sendBrowserNotification(title: string, options: Notificati
         } catch {}
       }, 7000);
 
-      return notif;
+      return true;
     } catch (err) {
       console.warn('Could not display window notification:', err);
     }
   }
 
-  return null;
+  return false;
 }
 
 // Update Title with Unread Count & Badge

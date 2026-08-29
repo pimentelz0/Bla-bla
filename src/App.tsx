@@ -589,8 +589,8 @@ export default function App() {
                     <Bell className="w-4 h-4" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xs font-bold text-[#17191C] leading-tight">Notificações estilo WhatsApp</p>
-                    <p className="text-[11px] text-[#4B5563] leading-tight mt-0.5">Alertas com som e vibração na barra de status</p>
+                    <p className="text-xs font-bold text-[#17191C] leading-tight">Notificações Blá Blá</p>
+                    <p className="text-[11px] text-[#4B5563] leading-tight mt-0.5">Alertas com som e na barra de status</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
@@ -787,6 +787,31 @@ export default function App() {
           showToast('Perfil atualizado com sucesso!', 'success');
         }}
         onLogout={handleLogout}
+        onTestNotification={() => {
+          setIncomingNotification({
+            id: `test_${Date.now()}`,
+            conversationId: conversations[0]?.id || 'demo_chat',
+            sender: {
+              id: 'test_user',
+              username: 'suporte_blabla',
+              profile_photo:
+                'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              last_seen: new Date().toISOString(),
+              is_online: true,
+            },
+            message: {
+              id: `test_msg_${Date.now()}`,
+              conversation_id: conversations[0]?.id || 'demo_chat',
+              sender_id: 'test_user',
+              message: '👋 Olá! Esta é uma notificação no estilo WhatsApp funcionando!',
+              created_at: new Date().toISOString(),
+              read: false,
+            },
+            receivedAt: new Date(),
+          });
+        }}
       />
 
       {/* Real-time In-App Push Notification Banner */}

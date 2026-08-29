@@ -2,9 +2,18 @@ import React, { useState, useRef } from 'react';
 import { User } from '../types';
 import { Avatar } from './Avatar';
 import { api } from '../services/api';
-import { X, Camera, LogOut, Key, Check } from 'lucide-react';
+import { X, Camera, LogOut, Key, Check, Bell, ExternalLink, Volume2 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { INVENTED_EMOJIS } from '../utils/customAvatars';
+import {
+  playNotificationSound,
+  sendBrowserNotification,
+  requestNotificationPermission,
+  getNotificationPermission,
+  isInIframe,
+  isIOS,
+  isStandalone,
+} from '../utils/notifications';
 
 interface ProfileModalProps {
   isOpen: boolean;
@@ -14,6 +23,7 @@ interface ProfileModalProps {
   onProfileUpdated?: (updatedUser: User) => void;
   onUpdateUser?: (updatedUser: User) => void;
   onLogout: () => void;
+  onTestNotification?: () => void;
 }
 
 export const ProfileModal: React.FC<ProfileModalProps> = ({
@@ -24,6 +34,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   onProfileUpdated,
   onUpdateUser,
   onLogout,
+  onTestNotification,
 }) => {
   const activeUser = propCurrentUser || propUser;
   const [isEditing, setIsEditing] = useState(false);
@@ -284,39 +295,60 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
               </button>
 
               {/* Notification Settings & Test Box */}
-              <div className="p-3.5 bg-emerald-50/70 border border-emerald-100/90 rounded-2xl space-y-2">
+              <div className="p-3.5 bg-emerald-50/80 border border-emerald-100 rounded-2xl space-y-2.5">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="text-base">🔔</span>
+                    <div className="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-2xs">
+                      <Bell className="w-3.5 h-3.5" />
+                    </div>
                     <div>
-                      <p className="text-xs font-bold text-gray-900 leading-tight">Notificações WhatsApp</p>
-                      <p className="text-[11px] text-gray-500">Alertas na barra de status e som</p>
+                      <p className="text-xs font-bold text-gray-900 leading-tight">Notificações Blá Blá</p>
+                      <p className="text-[11px] text-gray-500">Alertas na barra de status e toque</p>
                     </div>
                   </div>
-                  <span className={`text-[10px] px-2 py-0.5 font-bold rounded-full uppercase tracking-wider ${
-                    typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted'
-                      ? 'bg-emerald-100 text-emerald-700'
-                      : 'bg-amber-100 text-amber-800'
-                  }`}>
-                    {typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted'
-                      ? 'Ativadas'
-                      : 'Desativadas'}
+                  <span
+                    className={`text-[10px] px-2 py-0.5 font-bold rounded-full uppercase tracking-wider ${
+                      getNotificationPermission() === 'granted'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}
+                  >
+                    {getNotificationPermission() === 'granted' ? 'Ativadas' : 'Desativadas'}
                   </span>
                 </div>
 
-                <div className="flex gap-2 pt-1">
-                  {typeof window !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted' && (
+                <div className="flex gap-2 pt-0.5">
+                  {getNotificationPermission() !== 'granted' && (
                     <button
                       type="button"
                       onClick={async () => {
                         try {
-                          const perm = await Notification.requestPermission();
+                          setErrorMsg(null);
+                          const perm = await requestNotificationPermission();
                           if (perm === 'granted') {
                             setSuccessMsg('Notificações ativadas com sucesso!');
+                            playNotificationSound();
+                            sendBrowserNotification('Blá Blá', {
+                              body: '🎉 Notificações do sistema ativadas!',
+                              icon: activeUser.profile_photo || '/icon-192.png',
+                              tag: 'perm_granted',
+                            });
+                            setTimeout(() => setSuccessMsg(null), 3500);
+                          } else if (isIOS() && !isStandalone()) {
+                            setSuccessMsg(
+                              '📱 No iPhone: Toque no botão Compartilhar 📤 no Safari e escolha "Adicionar à Tela de Início" para ativar notificações.'
+                            );
+                            setTimeout(() => setSuccessMsg(null), 6000);
+                          } else {
+                            setErrorMsg('Permissão de notificação não foi concedida no navegador.');
+                            setTimeout(() => setErrorMsg(null), 4000);
                           }
-                        } catch {}
+                        } catch {
+                          setErrorMsg('Não foi possível solicitar permissão neste navegador.');
+                          setTimeout(() => setErrorMsg(null), 4000);
+                        }
                       }}
-                      className="flex-1 py-1.5 px-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-2xs transition-all cursor-pointer text-center"
+                      className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-semibold shadow-2xs transition-all cursor-pointer text-center"
                     >
                       Permitir Notificações
                     </button>
@@ -324,25 +356,65 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => {
-                      if (typeof window !== 'undefined') {
-                        import('../utils/notifications').then(({ playNotificationSound, sendBrowserNotification }) => {
-                          playNotificationSound();
-                          sendBrowserNotification('@exemplo (Blá Blá)', {
-                            body: '👋 Esta é uma notificação de teste no estilo WhatsApp!',
-                            icon: activeUser.profile_photo || '/icon-192.png',
-                            tag: 'test_notification',
-                          });
-                        });
-                        setSuccessMsg('Notificação e som de teste disparados!');
-                        setTimeout(() => setSuccessMsg(null), 3000);
+                    onClick={async () => {
+                      setErrorMsg(null);
+                      // 1. Play sound synchronously on user click
+                      playNotificationSound();
+
+                      // 2. Trigger in-app WhatsApp-style banner
+                      if (onTestNotification) {
+                        onTestNotification();
                       }
+
+                      // 3. Dispatch native system notification
+                      const sent = await sendBrowserNotification('@exemplo (Blá Blá)', {
+                        body: '👋 Esta é uma notificação de teste no Blá Blá!',
+                        icon: activeUser.profile_photo || '/icon-192.png',
+                        tag: 'test_notification',
+                      });
+
+                      if (sent) {
+                        setSuccessMsg('Som tocado e notificação enviada para a barra de status!');
+                      } else {
+                        setSuccessMsg('Som e banner de teste disparados com sucesso!');
+                      }
+
+                      setTimeout(() => setSuccessMsg(null), 3500);
                     }}
-                    className="flex-1 py-1.5 px-3 bg-white hover:bg-gray-50 active:bg-gray-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center shadow-2xs"
+                    className="flex-1 py-2 px-3 bg-white hover:bg-gray-50 active:bg-gray-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center shadow-2xs flex items-center justify-center gap-1.5"
                   >
-                    Testar Notificação
+                    <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Testar Notificação</span>
                   </button>
                 </div>
+
+                {/* iPhone / iOS Special PWA Guidance */}
+                {isIOS() && !isStandalone() && (
+                  <div className="pt-1.5 border-t border-emerald-100/80 text-[11px] text-emerald-900/90 flex items-start gap-1.5 leading-relaxed">
+                    <span className="text-xs shrink-0">📱</span>
+                    <div className="flex-1">
+                      <span className="font-semibold text-emerald-800">Dica para iPhone (iOS):</span> Para receber notificações na tela bloqueada, toque em Compartilhar <span className="font-bold">📤</span> no Safari e selecione <span className="font-bold">"Adicionar à Tela de Início"</span>.
+                    </div>
+                  </div>
+                )}
+
+                {/* Iframe tip if previewing */}
+                {isInIframe() && !isIOS() && (
+                  <div className="pt-1 border-t border-emerald-100/80 text-[11px] text-emerald-900/80 flex items-start gap-1.5">
+                    <span className="text-xs shrink-0">💡</span>
+                    <div className="flex-1">
+                      <span>No modo preview (iframe), os navegadores bloqueiam notificações do sistema. </span>
+                      <a
+                        href={window.location.href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-bold underline text-emerald-700 hover:text-emerald-900 inline-flex items-center gap-0.5"
+                      >
+                        Abrir em Nova Aba <ExternalLink className="w-2.5 h-2.5 inline" />
+                      </a>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <button
