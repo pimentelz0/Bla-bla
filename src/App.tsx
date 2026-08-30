@@ -11,13 +11,13 @@ import { ProfileModal } from './components/ProfileModal';
 import { AuthScreen } from './components/AuthScreen';
 import { ConversationActionMenu } from './components/ConversationActionMenu';
 import { ToastContainer, ToastMessage } from './components/Toast';
-import { NotificationBanner, IncomingNotification } from './components/NotificationBanner';
 import {
   playNotificationSound,
   sendBrowserNotification,
   isNotificationSupported,
   getNotificationPermission,
   requestNotificationPermission,
+  subscribeUserToWebPush,
   registerServiceWorker,
   initAudioUnlock,
   updateAppBadgeAndTitle,
@@ -48,7 +48,6 @@ export default function App() {
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
 
   // Notifications
-  const [incomingNotification, setIncomingNotification] = useState<IncomingNotification | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(getNotificationPermission());
   const [showNotificationPrompt, setShowNotificationPrompt] = useState(
     isNotificationSupported() && getNotificationPermission() === 'default'
@@ -76,7 +75,6 @@ export default function App() {
       const handleServiceWorkerMessage = (event: MessageEvent) => {
         if (event.data?.type === 'OPEN_CONVERSATION' && event.data?.conversationId) {
           setActiveConversationId(event.data.conversationId);
-          setIncomingNotification(null);
         }
       };
 
@@ -106,14 +104,22 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
+  // Automatically ensure push notifications subscription is active whenever currentUser is logged in
+  useEffect(() => {
+    if (currentUser && getNotificationPermission() === 'granted') {
+      subscribeUserToWebPush().catch(() => {});
+    }
+  }, [currentUser?.id]);
+
   const handleRequestNotificationPermission = async () => {
     const perm = await requestNotificationPermission();
     setNotificationPermission(perm);
     setShowNotificationPrompt(false);
     if (perm === 'granted') {
-      showToast('Notificações estilo WhatsApp ativadas!', 'success');
+      await subscribeUserToWebPush().catch(() => {});
+      showToast('Notificações no sistema ativadas!', 'success');
       playNotificationSound();
-      sendBrowserNotification('Blá Blá • WhatsApp', {
+      sendBrowserNotification('Blá Blá', {
         body: '🎉 Notificações na barra de status ativadas com sucesso!',
         tag: 'welcome_notif',
       });
@@ -127,6 +133,9 @@ export default function App() {
       try {
         const fresh = await api.getMe();
         setCurrentUser(fresh);
+        if (getNotificationPermission() === 'granted') {
+          subscribeUserToWebPush().catch(() => {});
+        }
       } catch (err: any) {
         if (err?.message?.includes('401') || err?.message?.includes('expirada') || err?.message?.includes('autorizado')) {
           console.warn('Session expired or invalid:', err);
@@ -214,24 +223,6 @@ export default function App() {
                     setActiveConversationId(freshConv.id);
                   },
                 });
-
-                if (activeConversationIdRef.current !== freshConv.id) {
-                  setIncomingNotification({
-                    id: simulatedMsgId,
-                    conversationId: freshConv.id,
-                    sender: freshConv.other_user,
-                    message: {
-                      id: simulatedMsgId,
-                      conversation_id: freshConv.id,
-                      sender_id: freshConv.other_user.id,
-                      receiver_id: currentUser.id,
-                      message: freshConv.last_message,
-                      created_at: freshConv.last_message_at,
-                      read: false,
-                    },
-                    receivedAt: new Date(),
-                  });
-                }
               }
             }
           }
@@ -387,6 +378,9 @@ export default function App() {
         };
 
         if (!isMuted) {
+          // Immediately acknowledge receipt to server so sender sees the double checkmark ✓✓
+          api.markDelivered(conversationId, msg.id).catch(() => {});
+
           const isUserActivelyViewingThisChat =
             isCurrentlyActive &&
             typeof document !== 'undefined' &&
@@ -420,17 +414,6 @@ export default function App() {
                 setActiveConversationId(conversationId);
               },
             });
-
-            // In-App Notification Banner if not looking at this chat
-            if (!isCurrentlyActive) {
-              setIncomingNotification({
-                id: msg.id,
-                conversationId,
-                sender,
-                message: msg,
-                receivedAt: new Date(),
-              });
-            }
           }
         }
       }
@@ -496,6 +479,16 @@ export default function App() {
     );
   }, []);
 
+  const handleMessageDelivered = useCallback((conversationId: string, messageId?: string) => {
+    setActiveMessages((prev) =>
+      prev.map((m) =>
+        m.conversation_id === conversationId && (!messageId || m.id === messageId)
+          ? { ...m, delivered: true }
+          : m,
+      ),
+    );
+  }, []);
+
   const handlePresenceUpdate = useCallback(
     (userId: string, isOnline: boolean, lastSeen: string) => {
       setConversations((prev) =>
@@ -521,6 +514,7 @@ export default function App() {
     currentUser,
     onNewMessage: handleNewMessage,
     onMessageRead: handleMessageRead,
+    onMessageDelivered: handleMessageDelivered,
     onPresenceUpdate: handlePresenceUpdate,
     onConversationsSync: silentSyncConversations,
   });
@@ -900,6 +894,7 @@ export default function App() {
                       key={conv.id}
                       conversation={conv}
                       isSelected={activeConversationId === conv.id}
+                      currentUserId={currentUser.id}
                       onSelect={() => setActiveConversationId(conv.id)}
                       onOpenActions={(targetConv) => setActionMenuConversation(targetConv)}
                     />
@@ -1000,16 +995,6 @@ export default function App() {
           showToast('Perfil atualizado com sucesso!', 'success');
         }}
         onLogout={handleLogout}
-      />
-
-      {/* Real-time In-App Push Notification Banner */}
-      <NotificationBanner
-        notification={incomingNotification}
-        onDismiss={() => setIncomingNotification(null)}
-        onOpenConversation={(convId) => {
-          setActiveConversationId(convId);
-          setIncomingNotification(null);
-        }}
       />
     </div>
   );

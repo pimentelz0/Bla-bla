@@ -14,6 +14,7 @@ interface UseSocketProps {
   currentUser: User | null;
   onNewMessage?: (msg: Message, conversationId: string, sender?: User) => void;
   onMessageRead?: (conversationId: string, readerId: string) => void;
+  onMessageDelivered?: (conversationId: string, messageId?: string) => void;
   onPresenceUpdate?: (userId: string, isOnline: boolean, lastSeen: string) => void;
   onConversationsSync?: () => void;
 }
@@ -22,6 +23,7 @@ export function useSocket({
   currentUser,
   onNewMessage,
   onMessageRead,
+  onMessageDelivered,
   onPresenceUpdate,
   onConversationsSync,
 }: UseSocketProps) {
@@ -35,6 +37,9 @@ export function useSocket({
 
   const onMessageReadRef = useRef(onMessageRead);
   onMessageReadRef.current = onMessageRead;
+
+  const onMessageDeliveredRef = useRef(onMessageDelivered);
+  onMessageDeliveredRef.current = onMessageDelivered;
 
   const onPresenceUpdateRef = useRef(onPresenceUpdate);
   onPresenceUpdateRef.current = onPresenceUpdate;
@@ -50,57 +55,69 @@ export function useSocket({
       .channel('public:messages')
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'messages' },
+        { event: '*', schema: 'public', table: 'messages' },
         async (payload: any) => {
           const newRow = payload.new;
-          if (newRow && (newRow.receiver_id === currentUser.id || newRow.sender_id === currentUser.id)) {
-            const msg: Message = {
-              id: newRow.id,
-              conversation_id: newRow.conversation_id,
-              sender_id: newRow.sender_id,
-              receiver_id: newRow.receiver_id,
-              message: newRow.message,
-              created_at: newRow.created_at,
-              read: newRow.read,
-            };
+          if (!newRow) return;
 
-            let senderUser: User | undefined;
-            if (newRow.sender_id && newRow.sender_id !== currentUser.id) {
-              try {
-                const { data } = await supabaseClient
-                  .from('users')
-                  .select('id, username, profile_photo, created_at, updated_at, last_seen')
-                  .eq('id', newRow.sender_id)
-                  .single();
-                if (data) {
+          if (payload.eventType === 'INSERT') {
+            if (newRow.receiver_id === currentUser.id || newRow.sender_id === currentUser.id) {
+              const msg: Message = {
+                id: newRow.id,
+                conversation_id: newRow.conversation_id,
+                sender_id: newRow.sender_id,
+                receiver_id: newRow.receiver_id,
+                message: newRow.message,
+                created_at: newRow.created_at,
+                delivered: newRow.delivered,
+                read: newRow.read,
+              };
+
+              let senderUser: User | undefined;
+              if (newRow.sender_id && newRow.sender_id !== currentUser.id) {
+                try {
+                  const { data } = await supabaseClient
+                    .from('users')
+                    .select('id, username, profile_photo, created_at, updated_at, last_seen')
+                    .eq('id', newRow.sender_id)
+                    .single();
+                  if (data) {
+                    senderUser = {
+                      id: data.id,
+                      username: data.username,
+                      profile_photo: data.profile_photo,
+                      created_at: data.created_at,
+                      updated_at: data.updated_at,
+                      last_seen: data.last_seen,
+                      is_online: true,
+                    };
+                  }
+                } catch (err) {
+                  console.debug('Failed to fetch sender details for notification:', err);
+                }
+
+                if (!senderUser) {
                   senderUser = {
-                    id: data.id,
-                    username: data.username,
-                    profile_photo: data.profile_photo,
-                    created_at: data.created_at,
-                    updated_at: data.updated_at,
-                    last_seen: data.last_seen,
+                    id: newRow.sender_id,
+                    username: 'contato',
+                    profile_photo: '',
+                    created_at: newRow.created_at,
+                    updated_at: newRow.created_at,
+                    last_seen: newRow.created_at,
                     is_online: true,
                   };
                 }
-              } catch (err) {
-                console.debug('Failed to fetch sender details for notification:', err);
               }
 
-              if (!senderUser) {
-                senderUser = {
-                  id: newRow.sender_id,
-                  username: 'contato',
-                  profile_photo: '',
-                  created_at: newRow.created_at,
-                  updated_at: newRow.created_at,
-                  last_seen: newRow.created_at,
-                  is_online: true,
-                };
-              }
+              onNewMessageRef.current?.(msg, newRow.conversation_id, senderUser);
             }
-
-            onNewMessageRef.current?.(msg, newRow.conversation_id, senderUser);
+          } else if (payload.eventType === 'UPDATE') {
+            if (newRow.read) {
+              onMessageReadRef.current?.(newRow.conversation_id, newRow.receiver_id);
+            }
+            if (newRow.delivered) {
+              onMessageDeliveredRef.current?.(newRow.conversation_id, newRow.id);
+            }
           }
         },
       )
@@ -248,6 +265,9 @@ export function useSocket({
           } else if (data.type === 'message:read') {
             const { conversation_id, reader_id } = data.payload;
             onMessageReadRef.current?.(conversation_id, reader_id);
+          } else if (data.type === 'message:delivered') {
+            const { conversation_id, message_id } = data.payload;
+            onMessageDeliveredRef.current?.(conversation_id, message_id);
           } else if (data.type === 'user:presence') {
             const { user_id, is_online, last_seen } = data.payload;
             onPresenceUpdateRef.current?.(user_id, is_online, last_seen);

@@ -167,7 +167,17 @@ export interface DbMessage {
   receiver_id: string;
   message: string;
   created_at: string;
+  delivered?: boolean;
   read: boolean;
+}
+
+export interface DbPushSubscription {
+  id: string;
+  user_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  created_at: string;
 }
 
 export interface DbPin {
@@ -215,7 +225,17 @@ CREATE TABLE IF NOT EXISTS public.messages (
   receiver_id TEXT NOT NULL,
   message TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
+  delivered BOOLEAN DEFAULT FALSE,
   read BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS public.pins (
@@ -235,6 +255,7 @@ CREATE TABLE IF NOT EXISTS public.auth_tokens (
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.pins ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.auth_tokens ENABLE ROW LEVEL SECURITY;
 
@@ -246,6 +267,9 @@ CREATE POLICY "Allow all on conversations" ON public.conversations FOR ALL USING
 
 DROP POLICY IF EXISTS "Allow all on messages" ON public.messages;
 CREATE POLICY "Allow all on messages" ON public.messages FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow all on push_subscriptions" ON public.push_subscriptions;
+CREATE POLICY "Allow all on push_subscriptions" ON public.push_subscriptions FOR ALL USING (true) WITH CHECK (true);
 
 DROP POLICY IF EXISTS "Allow all on pins" ON public.pins;
 CREATE POLICY "Allow all on pins" ON public.pins FOR ALL USING (true) WITH CHECK (true);
@@ -290,6 +314,7 @@ const memoryFallback = {
   messages: new Map<string, DbMessage>(),
   pins: new Map<string, DbPin>(),
   tokens: new Map<string, string>(),
+  pushSubscriptions: new Map<string, DbPushSubscription>(),
 };
 
 let supabaseTablesVerified = false;
@@ -921,3 +946,108 @@ export async function dbDeleteToken(token: string): Promise<void> {
     console.error('Supabase delete token error:', err);
   }
 }
+
+// Push Subscription methods
+export async function dbSavePushSubscription(sub: {
+  userId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}): Promise<void> {
+  const id = `push_${Buffer.from(sub.endpoint).toString('base64').substring(0, 32)}`;
+  const record: DbPushSubscription = {
+    id,
+    user_id: sub.userId,
+    endpoint: sub.endpoint,
+    p256dh: sub.p256dh,
+    auth: sub.auth,
+    created_at: new Date().toISOString(),
+  };
+
+  memoryFallback.pushSubscriptions.set(sub.endpoint, record);
+
+  try {
+    await supabase.from('push_subscriptions').upsert(
+      [record],
+      { onConflict: 'endpoint' },
+    );
+  } catch (err) {
+    console.error('Supabase save push subscription error:', err);
+  }
+}
+
+export async function dbGetPushSubscriptionsByUser(userId: string): Promise<DbPushSubscription[]> {
+  try {
+    const { data, error } = await supabase
+      .from('push_subscriptions')
+      .select('*')
+      .eq('user_id', userId);
+
+    if (!error && data) {
+      for (const s of data) {
+        memoryFallback.pushSubscriptions.set(s.endpoint, s);
+      }
+      return data as DbPushSubscription[];
+    }
+  } catch (err) {
+    console.error('Supabase get push subscriptions error:', err);
+  }
+
+  const results: DbPushSubscription[] = [];
+  for (const s of memoryFallback.pushSubscriptions.values()) {
+    if (s.user_id === userId) {
+      results.push(s);
+    }
+  }
+  return results;
+}
+
+export async function dbDeletePushSubscription(endpoint: string): Promise<void> {
+  memoryFallback.pushSubscriptions.delete(endpoint);
+
+  try {
+    await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint);
+  } catch (err) {
+    console.error('Supabase delete push subscription error:', err);
+  }
+}
+
+export async function dbMarkMessagesAsDelivered(messageIds: string[]): Promise<void> {
+  if (!messageIds || messageIds.length === 0) return;
+
+  for (const id of messageIds) {
+    const msg = memoryFallback.messages.get(id);
+    if (msg) {
+      msg.delivered = true;
+    }
+  }
+
+  try {
+    await supabase
+      .from('messages')
+      .update({ delivered: true })
+      .in('id', messageIds);
+  } catch (err) {
+    console.error('Supabase mark delivered error:', err);
+  }
+}
+
+export async function dbMarkConversationDelivered(convId: string, receiverId: string): Promise<void> {
+  for (const m of memoryFallback.messages.values()) {
+    if (m.conversation_id === convId && m.receiver_id === receiverId && !m.delivered) {
+      m.delivered = true;
+    }
+  }
+
+  try {
+    await supabase
+      .from('messages')
+      .update({ delivered: true })
+      .eq('conversation_id', convId)
+      .eq('receiver_id', receiverId)
+      .eq('delivered', false);
+  } catch (err) {
+    console.error('Supabase mark conversation delivered error:', err);
+  }
+}
+

@@ -222,6 +222,36 @@ export const api = {
     });
   },
 
+  async getVapidPublicKey(): Promise<string> {
+    const res = await fetchWithAuth<{ publicKey: string }>('/api/push/vapid-public-key');
+    return res.publicKey;
+  },
+
+  async savePushSubscription(subscription: any): Promise<void> {
+    await fetchWithAuth('/api/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify({ subscription }),
+    });
+  },
+
+  async unsubscribePush(endpoint: string): Promise<void> {
+    await fetchWithAuth('/api/push/unsubscribe', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
+    });
+  },
+
+  async markDelivered(conversationId: string, messageId?: string): Promise<void> {
+    try {
+      await fetchWithAuth('/api/messages/delivered', {
+        method: 'POST',
+        body: JSON.stringify({ conversationId, messageId }),
+      });
+    } catch {
+      // ignore
+    }
+  },
+
   async getSupabaseStatus(): Promise<{
     supabase_url: string;
     connected: boolean;

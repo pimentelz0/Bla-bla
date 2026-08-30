@@ -1,6 +1,19 @@
 // Web & Mobile Notification & Audio Chime Helper for WhatsApp-like alerts
 
+import { api } from '../services/api';
+
 let audioCtx: AudioContext | null = null;
+
+export function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
 
 export function isInIframe(): boolean {
   try {
@@ -134,10 +147,95 @@ export function getNotificationPermission(): NotificationPermission {
   return Notification.permission;
 }
 
+export async function subscribeUserToWebPush(): Promise<boolean> {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return false;
+  }
+
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+    return false;
+  }
+
+  try {
+    // Wait for Service Worker registration to be fully ready
+    let targetReg: ServiceWorkerRegistration | null = null;
+    try {
+      targetReg = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+      ]);
+    } catch {}
+
+    if (!targetReg) {
+      targetReg = await navigator.serviceWorker.getRegistration();
+    }
+
+    if (!targetReg) {
+      targetReg = await registerServiceWorker();
+    }
+
+    if (!targetReg || !targetReg.pushManager) {
+      console.debug('PushManager not available on this browser/platform (e.g. iOS outside standalone mode)');
+      return false;
+    }
+
+    // Get VAPID public key from backend
+    const vapidKey = await api.getVapidPublicKey();
+    if (!vapidKey) return false;
+
+    const convertedKey = urlBase64ToUint8Array(vapidKey);
+
+    let sub = await targetReg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await targetReg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: convertedKey,
+      });
+    }
+
+    if (sub) {
+      await api.savePushSubscription(sub.toJSON());
+      console.debug('Web Push subscription successfully active and saved to backend!');
+      return true;
+    }
+  } catch (err: any) {
+    console.warn('Web Push subscription error, attempting renewal:', err?.message || err);
+    // If failed due to old key or stale subscription, unsubscribe and re-subscribe cleanly
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg?.pushManager) {
+        const oldSub = await reg.pushManager.getSubscription();
+        if (oldSub) {
+          await oldSub.unsubscribe();
+        }
+        const vapidKey = await api.getVapidPublicKey();
+        if (vapidKey) {
+          const convertedKey = urlBase64ToUint8Array(vapidKey);
+          const freshSub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: convertedKey,
+          });
+          if (freshSub) {
+            await api.savePushSubscription(freshSub.toJSON());
+            console.debug('Web Push successfully re-subscribed with fresh credentials!');
+            return true;
+          }
+        }
+      }
+    } catch (retryErr) {
+      console.debug('Push re-subscription retry failed:', retryErr);
+    }
+  }
+  return false;
+}
+
 export async function requestNotificationPermission(): Promise<NotificationPermission> {
   if (typeof window === 'undefined' || !('Notification' in window)) return 'denied';
   try {
     const perm = await Notification.requestPermission();
+    if (perm === 'granted') {
+      subscribeUserToWebPush().catch(() => {});
+    }
     return perm;
   } catch (err) {
     console.warn('Error requesting notification permission:', err);

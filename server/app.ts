@@ -38,7 +38,12 @@ import {
   dbIsBlocked,
   dbToggleManualUnread,
   dbIsManualUnread,
+  dbSavePushSubscription,
+  dbDeletePushSubscription,
+  dbMarkMessagesAsDelivered,
+  dbMarkConversationDelivered,
 } from './supabase';
+import { getVapidPublicKey, sendWebPushToUser } from './webPush';
 import { INVENTED_EMOJIS } from '../src/utils/customAvatars';
 
 function hashPassword(pin: string, salt: string): string {
@@ -644,6 +649,13 @@ export function createExpressApp(
     await dbUpdateConversationLastMessage(convId, cleanText, now, currentUserId);
 
     const senderUser = await dbFindUserById(currentUserId);
+    const onlineSet = getOnlineUserIds();
+    const isReceiverOnline = onlineSet.has(otherUserId);
+
+    if (isReceiverOnline) {
+      newMsg.delivered = true;
+      await dbMarkMessagesAsDelivered([msgId]);
+    }
 
     // Broadcast to receiver
     broadcastToUser(otherUserId, {
@@ -651,21 +663,111 @@ export function createExpressApp(
       payload: {
         message: newMsg,
         conversation_id: convId,
-        sender: senderUser ? sanitizeUser(senderUser, getOnlineUserIds()) : { id: currentUserId, username: 'Usuário' },
+        sender: senderUser ? sanitizeUser(senderUser, onlineSet) : { id: currentUserId, username: 'Usuário' },
       },
     });
 
-    // Also broadcast to other sender tabs if any
+    // Also broadcast to sender
     broadcastToUser(currentUserId, {
       type: 'message:new',
       payload: {
         message: newMsg,
         conversation_id: convId,
-        sender: senderUser ? sanitizeUser(senderUser, getOnlineUserIds()) : { id: currentUserId, username: 'Usuário' },
+        sender: senderUser ? sanitizeUser(senderUser, onlineSet) : { id: currentUserId, username: 'Usuário' },
       },
     });
 
+    // Send real Web Push notification to wake up device even if app is closed
+    let pushPreview = cleanText;
+    try {
+      const parsed = JSON.parse(cleanText);
+      if (parsed.type === 'image') pushPreview = '📷 Foto' + (parsed.content ? `: ${parsed.content}` : '');
+      else if (parsed.type === 'audio') pushPreview = '🎤 Mensagem de voz';
+      else if (parsed.type === 'sticker') pushPreview = '🎭 Figurinha';
+    } catch {}
+
+    const senderName = senderUser?.username ? `@${senderUser.username}` : 'Blá Blá';
+    sendWebPushToUser(
+      otherUserId,
+      {
+        title: senderName,
+        body: pushPreview,
+        icon: senderUser?.profile_photo || '/icon-192.png',
+        badge: '/icon-192.png',
+        tag: `chat_${convId}`,
+        data: {
+          conversationId: convId,
+          messageId: msgId,
+          senderId: currentUserId,
+          timestamp: Date.now(),
+        },
+      },
+      broadcastToUser,
+    ).catch((err) => console.error('WebPush background error:', err));
+
     return res.status(201).json({ message: newMsg });
+  });
+
+  // Get VAPID Public Key for Web Push subscription
+  app.get(['/api/push/vapid-public-key', '/push/vapid-public-key'], (req, res) => {
+    return res.json({ publicKey: getVapidPublicKey() });
+  });
+
+  // Save Push Subscription
+  app.post(['/api/push/subscribe', '/push/subscribe'], authenticate, async (req, res) => {
+    const currentUserId = ((req as any).user as DbUser).id;
+    const { subscription } = req.body || {};
+
+    if (!subscription || !subscription.endpoint || !subscription.keys) {
+      return res.status(400).json({ error: 'Inscrição Push inválida.' });
+    }
+
+    try {
+      await dbSavePushSubscription({
+        userId: currentUserId,
+        endpoint: subscription.endpoint,
+        p256dh: subscription.keys.p256dh,
+        auth: subscription.keys.auth,
+      });
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('Error saving push subscription:', err);
+      return res.status(500).json({ error: 'Erro ao registrar notificações Push.' });
+    }
+  });
+
+  // Unsubscribe Push
+  app.post(['/api/push/unsubscribe', '/push/unsubscribe'], authenticate, async (req, res) => {
+    const { endpoint } = req.body || {};
+    if (endpoint) {
+      await dbDeletePushSubscription(endpoint);
+    }
+    return res.json({ success: true });
+  });
+
+  // Mark message as delivered acknowledgment
+  app.post(['/api/messages/delivered', '/messages/delivered'], authenticate, async (req, res) => {
+    const currentUserId = ((req as any).user as DbUser).id;
+    const { messageId, conversationId } = req.body || {};
+
+    if (messageId) {
+      await dbMarkMessagesAsDelivered([messageId]);
+    } else if (conversationId) {
+      await dbMarkConversationDelivered(conversationId, currentUserId);
+    }
+
+    if (conversationId) {
+      const conv = await dbGetConversationById(conversationId);
+      if (conv) {
+        const otherUserId = conv.user_1 === currentUserId ? conv.user_2 : conv.user_1;
+        broadcastToUser(otherUserId, {
+          type: 'message:delivered',
+          payload: { conversation_id: conversationId, message_id: messageId },
+        });
+      }
+    }
+
+    return res.json({ success: true });
   });
 
   // Health check - only API prefixes, do NOT match '/'

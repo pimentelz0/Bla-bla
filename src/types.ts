@@ -18,6 +18,7 @@ export interface Message {
   receiver_id: string;
   message: string;
   created_at: string;
+  delivered?: boolean;
   read: boolean;
   media_type?: MessageType;
   media_url?: string;

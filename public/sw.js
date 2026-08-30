@@ -66,24 +66,44 @@ self.addEventListener('message', (event) => {
   }
 });
 
-// Handle push events if configured
+// Handle push events (Wakes up mobile device when app is completely closed)
 self.addEventListener('push', (event) => {
   if (!event.data) return;
 
   try {
     const payload = event.data.json();
     const title = payload.title || 'Blá Blá';
+    const tag = payload.tag || (payload.data?.conversationId ? `chat_${payload.data.conversationId}` : 'blabla_msg');
     const options = {
       body: payload.body || 'Nova mensagem recebida',
       icon: payload.icon || '/icon-192.png',
       badge: '/icon-192.png',
       vibrate: [200, 100, 200],
-      tag: payload.tag || 'blabla-message',
+      tag: tag,
       renotify: true,
       data: payload.data || {},
+      actions: [
+        { action: 'open', title: '💬 Abrir conversa' }
+      ]
     };
 
-    event.waitUntil(self.registration.showNotification(title, options));
+    const promises = [self.registration.showNotification(title, options)];
+
+    // Notify server that message was delivered to device
+    if (payload.data?.messageId) {
+      promises.push(
+        fetch('/api/messages/delivered', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messageId: payload.data.messageId,
+            conversationId: payload.data.conversationId,
+          }),
+        }).catch(() => {})
+      );
+    }
+
+    event.waitUntil(Promise.all(promises));
   } catch (err) {
     console.error('Error in push event handler:', err);
   }

@@ -3,12 +3,13 @@ import { ConversationSummary } from '../types';
 import { Avatar } from './Avatar';
 import { formatChatListTime } from '../utils/formatters';
 import { parseMessageContent } from '../utils/mediaHelper';
-import { Pin, BellOff, Archive, ShieldBan, MoreVertical, CheckCheck } from 'lucide-react';
+import { Pin, BellOff, Archive, ShieldBan, MoreVertical, CheckCheck, Check } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface ChatItemProps {
   conversation: ConversationSummary;
   isSelected?: boolean;
+  currentUserId?: string;
   onSelect: () => void;
   onOpenActions: (conv: ConversationSummary) => void;
   id?: string;
@@ -17,6 +18,7 @@ interface ChatItemProps {
 export const ChatItem: React.FC<ChatItemProps> = ({
   conversation,
   isSelected = false,
+  currentUserId,
   onSelect,
   onOpenActions,
   id,
@@ -195,11 +197,16 @@ export const ChatItem: React.FC<ChatItemProps> = ({
           {/* Sub Row: Message preview + Unread Badge + Action Trigger */}
           <div className="flex items-center justify-between gap-2">
             <div
-              className={`text-[13px] truncate flex items-center gap-1 ${
+              className={`text-[13px] truncate flex items-center gap-1 min-w-0 ${
                 hasUnread ? 'font-medium text-[#17191C]' : 'text-[#7A7F87]'
               }`}
             >
-              {renderMessagePreview()}
+              {conversation.last_sender_id && currentUserId && conversation.last_sender_id === currentUserId && (
+                <span className="shrink-0">
+                  <CheckCheck className="w-3.5 h-3.5 text-blue-500" />
+                </span>
+              )}
+              <span className="truncate">{renderMessagePreview()}</span>
             </div>
 
             <div className="flex items-center gap-1 shrink-0">

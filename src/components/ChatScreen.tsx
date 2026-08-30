@@ -310,9 +310,11 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
                           {isMe && (
                             <span>
                               {msg.read ? (
-                                <CheckCheck className="w-3 h-3 text-blue-300" />
+                                <CheckCheck className="w-3 h-3 text-cyan-300" title="Lida" />
+                              ) : msg.delivered ? (
+                                <CheckCheck className="w-3 h-3 text-white" title="Entregue" />
                               ) : (
-                                <Check className="w-3 h-3 text-white" />
+                                <Check className="w-3 h-3 text-white/75" title="Enviada" />
                               )}
                             </span>
                           )}
@@ -373,9 +375,11 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
                           {isMe && (
                             <span>
                               {msg.read ? (
-                                <CheckCheck className="w-3.5 h-3.5 text-blue-200" />
+                                <CheckCheck className="w-3.5 h-3.5 text-cyan-200" title="Lida" />
+                              ) : msg.delivered ? (
+                                <CheckCheck className="w-3.5 h-3.5 text-blue-200/90" title="Entregue" />
                               ) : (
-                                <Check className="w-3.5 h-3.5 text-blue-200" />
+                                <Check className="w-3.5 h-3.5 text-blue-200/80" title="Enviada" />
                               )}
                             </span>
                           )}
