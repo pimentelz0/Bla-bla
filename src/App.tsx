@@ -662,7 +662,9 @@ export default function App() {
 
   const handleSendMessage = async (text: string) => {
     if (!activeConversationId) return;
-    const res = await api.sendMessage(activeConversationId, text);
+    const currentConv = conversations.find((c) => c.id === activeConversationId);
+    const targetUserId = currentConv?.other_user?.id;
+    const res = await api.sendMessage(activeConversationId, text, targetUserId);
     setActiveMessages((prev) => [...prev, res.message]);
 
     // Update conversation in list

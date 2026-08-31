@@ -617,18 +617,40 @@ export function createExpressApp(
   app.post(['/api/conversations/:id/messages', '/conversations/:id/messages'], authenticate, async (req, res) => {
     const currentUserId = ((req as any).user as DbUser).id;
     const convId = req.params.id;
-    const { message } = req.body || {};
+    const { message, receiver_id } = req.body || {};
 
     if (!message || typeof message !== 'string' || !message.trim()) {
       return res.status(400).json({ error: 'Mensagem não pode ser vazia.' });
     }
 
-    const conv = await dbGetConversationById(convId);
-    if (!conv || (conv.user_1 !== currentUserId && conv.user_2 !== currentUserId)) {
-      return res.status(403).json({ error: 'Acesso não permitido.' });
+    let conv = await dbGetConversationById(convId);
+    let otherUserId: string | null = receiver_id || null;
+
+    if (conv) {
+      if (conv.user_1 !== currentUserId && conv.user_2 !== currentUserId) {
+        return res.status(403).json({ error: 'Acesso não permitido.' });
+      }
+      if (!otherUserId) {
+        otherUserId = conv.user_1 === currentUserId ? conv.user_2 : conv.user_1;
+      }
+    } else {
+      // Synthetic conversation ID fallback (e.g. c_u_user1_u_user2)
+      if (convId.startsWith('c_u_')) {
+        const parts = convId.substring(2).split('_u_');
+        if (parts.length === 2) {
+          const u1 = `u_${parts[0].replace(/^u_/, '')}`;
+          const u2 = `u_${parts[1]}`;
+          if (u1 === currentUserId || u2 === currentUserId) {
+            otherUserId = otherUserId || (u1 === currentUserId ? u2 : u1);
+          }
+        }
+      }
     }
 
-    const otherUserId = conv.user_1 === currentUserId ? conv.user_2 : conv.user_1;
+    if (!otherUserId) {
+      return res.status(400).json({ error: 'Destinatário não identificado para esta conversa.' });
+    }
+
     const msgId = `m_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date().toISOString();
     const cleanText = message.trim();
@@ -643,7 +665,7 @@ export function createExpressApp(
       read: false,
     };
 
-    // Save message to Supabase
+    // 1. Save message to Supabase
     await dbCreateMessage(newMsg);
     // Update conversation last message in Supabase
     await dbUpdateConversationLastMessage(convId, cleanText, now, currentUserId);
@@ -677,7 +699,7 @@ export function createExpressApp(
       },
     });
 
-    // Send real Web Push notification to wake up device even if app is closed
+    // 2. Format Web Push payload
     let pushPreview = cleanText;
     try {
       const parsed = JSON.parse(cleanText);
@@ -687,27 +709,37 @@ export function createExpressApp(
     } catch {}
 
     const senderName = senderUser?.username ? `@${senderUser.username}` : 'Blá Blá';
-    console.log(`[MESSAGE_SENT] Msg from ${currentUserId} to ${otherUserId}. Dispatching real-time WebPush...`);
-    sendWebPushToUser(
-      otherUserId,
-      {
-        title: senderName,
-        body: pushPreview,
-        icon: senderUser?.profile_photo || '/icon-192.png',
-        badge: '/icon-192.png',
-        tag: `chat_${convId}`,
-        data: {
-          conversationId: convId,
-          messageId: msgId,
-          senderId: currentUserId,
-          timestamp: Date.now(),
-        },
+    const pushPayload = {
+      title: senderName,
+      body: pushPreview,
+      icon: senderUser?.profile_photo || '/icon-192.png',
+      badge: '/icon-192.png',
+      tag: `chat_${convId}`,
+      data: {
+        conversationId: convId,
+        messageId: msgId,
+        senderId: currentUserId,
+        timestamp: Date.now(),
       },
-      broadcastToUser,
-    ).then((res) => {
-      console.log(`[WebPush_DISPATCH] Result for ${otherUserId}: sent=${res.sentCount}, errors=${res.errors}`);
-    }).catch((err) => console.error('[WebPush_DISPATCH_ERROR]', err));
+    };
 
+    // 3. AWAIT Web Push dispatch so Vercel Serverless Function does not freeze execution before gateway delivery
+    try {
+      console.log(`[MESSAGE_SENT] Msg from ${currentUserId} to ${otherUserId}. Awaiting WebPush before response...`);
+      // Use Promise.race with a 3-second ceiling so API responds quickly even if external push gateway is sluggish
+      const pushPromise = sendWebPushToUser(otherUserId, pushPayload, broadcastToUser);
+      const timeoutPromise = new Promise<{ sentCount: number; errors: number }>((resolve) =>
+        setTimeout(() => resolve({ sentCount: 0, errors: 0 }), 3000)
+      );
+
+      const pushResult = await Promise.race([pushPromise, timeoutPromise]);
+      console.log(`[WebPush_DISPATCH] Result for ${otherUserId}: sent=${pushResult.sentCount}, errors=${pushResult.errors}`);
+    } catch (pushErr) {
+      // 4. Log error without blocking the message response
+      console.error('[WebPush_DISPATCH_ERROR] Error while dispatching Web Push:', pushErr);
+    }
+
+    // 5. Return message response normally
     return res.status(201).json({ message: newMsg });
   });
 

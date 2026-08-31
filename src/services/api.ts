@@ -215,10 +215,10 @@ export const api = {
     );
   },
 
-  async sendMessage(conversationId: string, message: string): Promise<{ message: Message }> {
+  async sendMessage(conversationId: string, message: string, receiverId?: string): Promise<{ message: Message }> {
     return await fetchWithAuth<{ message: Message }>(`/api/conversations/${conversationId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, receiver_id: receiverId }),
     });
   },
 
