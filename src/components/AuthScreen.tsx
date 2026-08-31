@@ -5,6 +5,12 @@ import { User } from '../types';
 import { ArrowRight, UserPlus, LogIn, Sparkles, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { INVENTED_EMOJIS, DEFAULT_AVATAR_URL } from '../utils/customAvatars';
+import {
+  requestNotificationPermission,
+  subscribeUserToWebPush,
+  isNotificationSupported,
+  getNotificationPermission,
+} from '../utils/notifications';
 
 interface AuthScreenProps {
   onAuthSuccess: (user: User) => void;
@@ -49,6 +55,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         const res = await api.login(cleanUsername, pin);
         if (res && res.user) {
           onShowToast(`Bem-vindo(a) de volta, @${res.user.username || cleanUsername}!`, 'success');
+          // Request notification permission and subscribe
+          if (isNotificationSupported() && getNotificationPermission() === 'default') {
+            try {
+              await requestNotificationPermission();
+            } catch {}
+          }
+          subscribeUserToWebPush().catch(() => {});
           onAuthSuccess(res.user);
         } else {
           throw new Error('Não foi possível entrar. Tente novamente.');
@@ -57,6 +70,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
         const res = await api.register(cleanUsername, pin, selectedAvatar);
         if (res && res.user) {
           onShowToast(`Conta criada com sucesso! Olá, @${res.user.username || cleanUsername}!`, 'success');
+          // Request notification permission and subscribe
+          if (isNotificationSupported() && getNotificationPermission() === 'default') {
+            try {
+              await requestNotificationPermission();
+            } catch {}
+          }
+          subscribeUserToWebPush().catch(() => {});
           onAuthSuccess(res.user);
         } else {
           throw new Error('Não foi possível criar a conta. Tente novamente.');

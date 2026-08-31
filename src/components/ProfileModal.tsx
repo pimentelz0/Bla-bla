@@ -1,8 +1,8 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { User } from '../types';
 import { Avatar } from './Avatar';
 import { api } from '../services/api';
-import { X, Camera, LogOut, Key, Check, Bell, ExternalLink, Volume2 } from 'lucide-react';
+import { X, Camera, LogOut, Key, Check, Bell, ExternalLink, Volume2, RefreshCw, Smartphone } from 'lucide-react';
 import { motion } from 'motion/react';
 import { INVENTED_EMOJIS } from '../utils/customAvatars';
 import {
@@ -12,6 +12,8 @@ import {
   requestNotificationPermission,
   getNotificationPermission,
   subscribeUserToWebPush,
+  checkPushSubscriptionStatus,
+  PushStatusInfo,
   isInIframe,
   isIOS,
   isStandalone,
@@ -46,16 +48,28 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [scheduledCountdown, setScheduledCountdown] = useState<number | null>(null);
+  const [pushInfo, setPushInfo] = useState<PushStatusInfo | null>(null);
+  const [isSyncingPush, setIsSyncingPush] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const refreshPushStatus = async () => {
+    try {
+      const info = await checkPushSubscriptionStatus();
+      setPushInfo(info);
+    } catch {}
+  };
+
   // Sync state whenever activeUser or isOpen changes
-  React.useEffect(() => {
+  useEffect(() => {
     if (activeUser) {
       setNewUsername(activeUser.username || '');
       setSelectedPhoto(activeUser.profile_photo || '');
       setCustomPhotoUrl('');
       setNewPin('');
+    }
+    if (isOpen) {
+      refreshPushStatus();
     }
   }, [activeUser, isOpen]);
 
@@ -304,7 +318,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     </div>
                     <div>
                       <p className="text-xs font-bold text-gray-900 leading-tight">Notificações Blá Blá</p>
-                      <p className="text-[11px] text-gray-500">Alertas na barra de status e toque</p>
+                      <p className="text-[11px] text-gray-500">Alertas na barra de status e tela bloqueada</p>
                     </div>
                   </div>
                   <span
@@ -314,57 +328,84 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         : 'bg-amber-100 text-amber-800'
                     }`}
                   >
-                    {getNotificationPermission() === 'granted' ? 'Ativadas' : 'Desativadas'}
+                    {getNotificationPermission() === 'granted' ? 'Permitido' : 'Pendente'}
                   </span>
                 </div>
 
+                {/* Live Diagnostic details */}
+                <div className="bg-white/80 rounded-xl p-2.5 border border-emerald-100 text-[11px] space-y-1 text-gray-600">
+                  <div className="flex items-center justify-between">
+                    <span>Permissão do Navegador:</span>
+                    <span className="font-semibold text-gray-800">
+                      {getNotificationPermission() === 'granted' ? '✅ Concedida' : getNotificationPermission() === 'denied' ? '❌ Bloqueada' : '⏳ Não solicitada'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Serviço Push (App Fechado):</span>
+                    <span className="font-semibold text-emerald-700 flex items-center gap-1">
+                      {pushInfo?.subscribedToServer ? '🚀 Conectado ao Servidor' : '⚠️ Sincronizando...'}
+                    </span>
+                  </div>
+                </div>
+
                 <div className="flex flex-col gap-2 pt-0.5">
-                  {getNotificationPermission() !== 'granted' && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          setErrorMsg(null);
-                          const perm = await requestNotificationPermission();
-                          if (perm === 'granted') {
-                            setSuccessMsg('Notificações ativadas com sucesso!');
+                  {/* Activate / Resubscribe Web Push */}
+                  <button
+                    type="button"
+                    disabled={isSyncingPush}
+                    onClick={async () => {
+                      setIsSyncingPush(true);
+                      setErrorMsg(null);
+                      try {
+                        const perm = await requestNotificationPermission();
+                        if (perm === 'granted') {
+                          const subscribed = await subscribeUserToWebPush();
+                          await refreshPushStatus();
+                          if (subscribed) {
+                            setSuccessMsg('✅ Inscrição Push sincronizada com sucesso no servidor!');
                             playNotificationSound();
                             sendBrowserNotification('Blá Blá', {
-                              body: '🎉 Notificações do sistema ativadas!',
+                              body: '🎉 Seu aparelho está pronto para receber notificações mesmo com o app fechado!',
                               icon: activeUser.profile_photo || '/icon-192.png',
-                              tag: 'perm_granted',
+                              tag: 'push_ready',
                             });
-                            setTimeout(() => setSuccessMsg(null), 3500);
-                          } else if (isIOS() && !isStandalone()) {
-                            setSuccessMsg(
-                              '📱 No iPhone: Toque no botão Compartilhar 📤 no Safari e escolha "Adicionar à Tela de Início" para ativar notificações na tela bloqueada.'
-                            );
-                            setTimeout(() => setSuccessMsg(null), 6000);
                           } else {
-                            setErrorMsg('Permissão de notificação não foi concedida no navegador.');
-                            setTimeout(() => setErrorMsg(null), 4000);
+                            setSuccessMsg('Permissão concedida. Tentando conectar com o serviço de push...');
                           }
-                        } catch {
-                          setErrorMsg('Não foi possível solicitar permissão neste navegador.');
+                          setTimeout(() => setSuccessMsg(null), 4000);
+                        } else if (isIOS() && !isStandalone()) {
+                          setSuccessMsg(
+                            '📱 No iPhone: Toque no botão Compartilhar 📤 no Safari e escolha "Adicionar à Tela de Início" para ativar notificações na tela bloqueada.'
+                          );
+                          setTimeout(() => setSuccessMsg(null), 6000);
+                        } else {
+                          setErrorMsg('Permissão de notificação não foi concedida no navegador.');
                           setTimeout(() => setErrorMsg(null), 4000);
                         }
-                      }}
-                      className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer text-center flex items-center justify-center gap-1.5"
-                    >
-                      <Bell className="w-3.5 h-3.5" />
-                      <span>Ativar Notificações no Celular</span>
-                    </button>
-                  )}
+                      } catch {
+                        setErrorMsg('Não foi possível solicitar permissão neste navegador.');
+                        setTimeout(() => setErrorMsg(null), 4000);
+                      } finally {
+                        setIsSyncingPush(false);
+                      }
+                    }}
+                    className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-bold shadow-2xs transition-all cursor-pointer text-center flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    {isSyncingPush ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Smartphone className="w-3.5 h-3.5" />
+                    )}
+                    <span>{getNotificationPermission() === 'granted' ? 'Re-sincronizar Notificações com App Fechado' : 'Ativar Notificações no Celular'}</span>
+                  </button>
 
                   {/* Immediate Status Bar Notification Test */}
                   <button
                     type="button"
                     onClick={async () => {
                       setErrorMsg(null);
-                      // Play sound
                       playNotificationSound();
 
-                      // Dispatch strictly to system notification tray / status bar formatted like WhatsApp
                       const sent = await sendBrowserNotification('@maria_silva', {
                         body: 'Oi! Tudo bem? Me avisa quando estiver livre para conversar! 👋',
                         icon: activeUser.profile_photo || '/icon-192.png',
@@ -381,13 +422,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
                       setTimeout(() => setSuccessMsg(null), 4000);
                     }}
-                    className="w-full py-2.5 px-3 bg-white hover:bg-gray-50 active:bg-gray-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-bold transition-all cursor-pointer text-center shadow-2xs flex items-center justify-center gap-1.5"
+                    className="w-full py-2 px-3 bg-white hover:bg-gray-50 active:bg-gray-100 text-emerald-800 border border-emerald-200 rounded-xl text-xs font-bold transition-all cursor-pointer text-center shadow-2xs flex items-center justify-center gap-1.5"
                   >
                     <Volume2 className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Testar Notificação WhatsApp na Barra</span>
+                    <span>Testar Notificação Agora (Toque + Barra)</span>
                   </button>
 
-                  {/* Scheduled test button for background/locked screen */}
+                  {/* Scheduled server test button for background/locked screen */}
                   <button
                     type="button"
                     disabled={scheduledCountdown !== null}
@@ -398,6 +439,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
                       // 1. Ensure user is subscribed to server Web Push
                       await subscribeUserToWebPush().catch(() => {});
+                      await refreshPushStatus();
 
                       // 2. Dispatch real server push after 5 seconds from the backend
                       api.triggerServerTestPush(5000).catch(() => {});
@@ -431,7 +473,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     <span>
                       {scheduledCountdown !== null
                         ? `⏳ Saia do app / Bloqueie a tela (${scheduledCountdown}s)...`
-                        : '⏱️ Testar Mensagem na Barra com Tela Bloqueada (em 5s)'}
+                        : '⏱️ Testar Notificação com App Fechado (Dispara em 5s)'}
                     </span>
                   </button>
                 </div>

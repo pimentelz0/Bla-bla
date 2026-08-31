@@ -147,6 +147,63 @@ export function getNotificationPermission(): NotificationPermission {
   return Notification.permission;
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer | null | undefined): string {
+  if (!buffer) return '';
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return window.btoa(binary);
+}
+
+export interface PushStatusInfo {
+  supported: boolean;
+  permission: NotificationPermission;
+  serviceWorkerRegistered: boolean;
+  subscribedToServer: boolean;
+  endpoint?: string;
+  isIosBrowser: boolean;
+  isStandalonePwa: boolean;
+}
+
+export async function checkPushSubscriptionStatus(): Promise<PushStatusInfo> {
+  const isIos = isIOS();
+  const standalone = isStandalone();
+  const supported = typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window;
+  const permission = getNotificationPermission();
+
+  let swRegistered = false;
+  let subscribed = false;
+  let endpoint: string | undefined;
+
+  if (supported && 'serviceWorker' in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg) {
+        swRegistered = true;
+        if (reg.pushManager) {
+          const sub = await reg.pushManager.getSubscription();
+          if (sub) {
+            subscribed = true;
+            endpoint = sub.endpoint;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return {
+    supported,
+    permission,
+    serviceWorkerRegistered: swRegistered,
+    subscribedToServer: subscribed,
+    endpoint,
+    isIosBrowser: isIos,
+    isStandalonePwa: standalone,
+  };
+}
+
 export async function subscribeUserToWebPush(): Promise<boolean> {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
     return false;
@@ -157,12 +214,12 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
   }
 
   try {
-    // Wait for Service Worker registration to be fully ready
+    // 1. Ensure Service Worker registration is ready
     let targetReg: ServiceWorkerRegistration | null = null;
     try {
       targetReg = await Promise.race([
         navigator.serviceWorker.ready,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
       ]);
     } catch {}
 
@@ -179,18 +236,21 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
       return false;
     }
 
-    // Get VAPID public key from backend
+    // 2. Fetch VAPID public key from backend
     const vapidKey = await api.getVapidPublicKey();
-    if (!vapidKey) return false;
+    if (!vapidKey) {
+      console.warn('Failed to retrieve VAPID public key from server');
+      return false;
+    }
 
     const convertedKey = urlBase64ToUint8Array(vapidKey);
 
     let sub = await targetReg.pushManager.getSubscription();
 
-    // Verify existing subscription against current VAPID key
+    // 3. Verify existing subscription against current VAPID key
     if (sub) {
       try {
-        const rawKey = sub.options.applicationServerKey;
+        const rawKey = sub.options?.applicationServerKey;
         if (rawKey) {
           const keyArray = new Uint8Array(rawKey);
           let match = keyArray.length === convertedKey.length;
@@ -203,7 +263,7 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
             }
           }
           if (!match) {
-            console.debug('VAPID key mismatch in existing subscription, renewing...');
+            console.log('VAPID key mismatch in existing subscription, renewing...');
             await sub.unsubscribe();
             sub = null;
           }
@@ -216,6 +276,7 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
       }
     }
 
+    // 4. Create new push subscription if needed
     if (!sub) {
       sub = await targetReg.pushManager.subscribe({
         userVisibleOnly: true,
@@ -224,19 +285,30 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
     }
 
     if (sub) {
-      await api.savePushSubscription(sub.toJSON());
-      console.debug('Web Push subscription successfully active and saved to backend!');
+      const p256dhKey = sub.getKey ? arrayBufferToBase64(sub.getKey('p256dh')) : (sub.toJSON()?.keys?.p256dh || '');
+      const authKey = sub.getKey ? arrayBufferToBase64(sub.getKey('auth')) : (sub.toJSON()?.keys?.auth || '');
+
+      const payload = {
+        endpoint: sub.endpoint,
+        expirationTime: sub.expirationTime || null,
+        keys: {
+          p256dh: p256dhKey,
+          auth: authKey,
+        },
+      };
+
+      await api.savePushSubscription(payload);
+      console.log('[WEBPUSH_CLIENT] Push subscription registered and sent to server successfully:', sub.endpoint);
       return true;
     }
   } catch (err: any) {
-    console.warn('Web Push subscription error, attempting renewal:', err?.message || err);
-    // If failed due to old key or stale subscription, unsubscribe and re-subscribe cleanly
+    console.warn('Web Push subscription initial attempt note, trying fresh reset:', err?.message || err);
     try {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg?.pushManager) {
         const oldSub = await reg.pushManager.getSubscription();
         if (oldSub) {
-          await oldSub.unsubscribe();
+          await oldSub.unsubscribe().catch(() => {});
         }
         const vapidKey = await api.getVapidPublicKey();
         if (vapidKey) {
@@ -246,14 +318,24 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
             applicationServerKey: convertedKey,
           });
           if (freshSub) {
-            await api.savePushSubscription(freshSub.toJSON());
-            console.debug('Web Push successfully re-subscribed with fresh credentials!');
+            const p256dhKey = freshSub.getKey ? arrayBufferToBase64(freshSub.getKey('p256dh')) : (freshSub.toJSON()?.keys?.p256dh || '');
+            const authKey = freshSub.getKey ? arrayBufferToBase64(freshSub.getKey('auth')) : (freshSub.toJSON()?.keys?.auth || '');
+
+            await api.savePushSubscription({
+              endpoint: freshSub.endpoint,
+              expirationTime: freshSub.expirationTime || null,
+              keys: {
+                p256dh: p256dhKey,
+                auth: authKey,
+              },
+            });
+            console.log('[WEBPUSH_CLIENT] Push successfully re-subscribed with fresh credentials!');
             return true;
           }
         }
       }
     } catch (retryErr) {
-      console.debug('Push re-subscription retry failed:', retryErr);
+      console.error('[WEBPUSH_CLIENT] Push re-subscription failed:', retryErr);
     }
   }
   return false;

@@ -583,7 +583,32 @@ export async function dbGetConversationById(convId: string): Promise<DbConversat
     console.error('Supabase get conv error:', err);
   }
 
-  return memoryFallback.conversations.get(convId) || null;
+  const inMem = memoryFallback.conversations.get(convId);
+  if (inMem) return inMem;
+
+  // If convId is formatted as c_user1_user2, reconstruct dynamically
+  if (convId.startsWith('c_u_')) {
+    const parts = convId.substring(2).split('_u_');
+    if (parts.length === 2) {
+      const u1 = `u_${parts[0].replace(/^u_/, '')}`;
+      const u2 = `u_${parts[1]}`;
+      const now = new Date().toISOString();
+      const reconstructed: DbConversation = {
+        id: convId,
+        user_1: u1,
+        user_2: u2,
+        created_at: now,
+        updated_at: now,
+        last_message: '',
+        last_message_at: now,
+        last_sender_id: '',
+      };
+      memoryFallback.conversations.set(convId, reconstructed);
+      return reconstructed;
+    }
+  }
+
+  return null;
 }
 
 export async function dbGetOrCreateConversation(
