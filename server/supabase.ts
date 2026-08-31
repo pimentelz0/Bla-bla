@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 
 function sanitizeSupabaseUrl(inputUrl?: string): string {
   const fallback = 'https://myoicywulrrzfohlsjfe.supabase.co';
@@ -308,6 +309,28 @@ EXCEPTION
 END $$;
 `;
 
+const SUBSCRIPTIONS_FILE = path.join(process.cwd(), '.push-subscriptions.json');
+
+function loadLocalPushSubscriptions(): Map<string, DbPushSubscription> {
+  const map = new Map<string, DbPushSubscription>();
+  try {
+    if (fs.existsSync(SUBSCRIPTIONS_FILE)) {
+      const raw = fs.readFileSync(SUBSCRIPTIONS_FILE, 'utf-8');
+      const list: DbPushSubscription[] = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        for (const item of list) {
+          if (item?.endpoint) {
+            map.set(item.endpoint, item);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load local push subscriptions file:', err);
+  }
+  return map;
+}
+
 // In-memory fallback cache only if Supabase tables haven't been run yet in the user's dashboard
 // This guarantees the app never crashes if the user is in the process of running the SQL in Supabase
 const memoryFallback = {
@@ -318,6 +341,15 @@ const memoryFallback = {
   tokens: new Map<string, string>(),
   pushSubscriptions: loadLocalPushSubscriptions(),
 };
+
+function saveLocalPushSubscriptions() {
+  try {
+    const list = Array.from(memoryFallback.pushSubscriptions.values());
+    fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(list, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Failed to save local push subscriptions file:', err);
+  }
+}
 
 let supabaseTablesVerified = false;
 
@@ -949,38 +981,12 @@ export async function dbDeleteToken(token: string): Promise<void> {
   }
 }
 
-const SUBSCRIPTIONS_FILE = path.join(process.cwd(), '.push-subscriptions.json');
-
-function loadLocalPushSubscriptions(): Map<string, DbPushSubscription> {
-  const map = new Map<string, DbPushSubscription>();
-  try {
-    if (fs.existsSync(SUBSCRIPTIONS_FILE)) {
-      const raw = fs.readFileSync(SUBSCRIPTIONS_FILE, 'utf-8');
-      const list: DbPushSubscription[] = JSON.parse(raw);
-      if (Array.isArray(list)) {
-        for (const item of list) {
-          if (item?.endpoint) {
-            map.set(item.endpoint, item);
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('Failed to load local push subscriptions file:', err);
-  }
-  return map;
+// Push Subscription methods (Dual-layer Supabase persistence guaranteed)
+function getPushTokenKey(endpoint: string): string {
+  const hash = crypto.createHash('sha256').update(endpoint).digest('hex').substring(0, 48);
+  return `pushsub_${hash}`;
 }
 
-function saveLocalPushSubscriptions() {
-  try {
-    const list = Array.from(memoryFallback.pushSubscriptions.values());
-    fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(list, null, 2), 'utf-8');
-  } catch (err) {
-    console.warn('Failed to save local push subscriptions file:', err);
-  }
-}
-
-// Push Subscription methods
 export async function dbSavePushSubscription(sub: {
   userId: string;
   endpoint: string;
@@ -988,52 +994,122 @@ export async function dbSavePushSubscription(sub: {
   auth: string;
 }): Promise<void> {
   const id = `push_${Buffer.from(sub.endpoint).toString('base64').substring(0, 32)}`;
+  const now = new Date().toISOString();
   const record: DbPushSubscription = {
     id,
     user_id: sub.userId,
     endpoint: sub.endpoint,
     p256dh: sub.p256dh,
     auth: sub.auth,
-    created_at: new Date().toISOString(),
+    created_at: now,
   };
 
   memoryFallback.pushSubscriptions.set(sub.endpoint, record);
   saveLocalPushSubscriptions();
 
+  // 1. Primary storage: public.push_subscriptions table
   try {
-    await supabase.from('push_subscriptions').upsert(
+    const { error: pushTableErr } = await supabase.from('push_subscriptions').upsert(
       [record],
       { onConflict: 'endpoint' },
     );
+    if (!pushTableErr) {
+      console.log(`[PUSH_PERSIST] Saved to Supabase push_subscriptions table for user ${sub.userId}`);
+    }
   } catch (err) {
-    console.error('Supabase save push subscription error:', err);
+    console.debug('Supabase push_subscriptions table write note:', err);
+  }
+
+  // 2. Guaranteed fallback storage: public.auth_tokens table (always exists in project database)
+  try {
+    const tokenKey = getPushTokenKey(sub.endpoint);
+    const compositeUserId = `PUSH:${sub.userId}:${JSON.stringify({
+      endpoint: sub.endpoint,
+      p256dh: sub.p256dh,
+      auth: sub.auth,
+    })}`;
+
+    const { error: tokenTableErr } = await supabase.from('auth_tokens').upsert([
+      {
+        token: tokenKey,
+        user_id: compositeUserId,
+        created_at: now,
+      },
+    ]);
+    if (!tokenTableErr) {
+      console.log(`[PUSH_PERSIST] Saved to Supabase auth_tokens fallback for user ${sub.userId}`);
+    }
+  } catch (err) {
+    console.debug('Supabase auth_tokens push fallback write note:', err);
   }
 }
 
 export async function dbGetPushSubscriptionsByUser(userId: string): Promise<DbPushSubscription[]> {
+  const subscriptionMap = new Map<string, DbPushSubscription>();
+
+  // 1. Primary: query public.push_subscriptions
   try {
-    const { data, error } = await supabase
+    const { data: pushData, error: pushErr } = await supabase
       .from('push_subscriptions')
       .select('*')
       .eq('user_id', userId);
 
-    if (!error && data && data.length > 0) {
-      for (const s of data) {
-        memoryFallback.pushSubscriptions.set(s.endpoint, s);
+    if (!pushErr && Array.isArray(pushData)) {
+      for (const s of pushData) {
+        if (s?.endpoint && s?.p256dh && s?.auth) {
+          subscriptionMap.set(s.endpoint, s as DbPushSubscription);
+        }
       }
-      saveLocalPushSubscriptions();
-      return data as DbPushSubscription[];
     }
   } catch (err) {
-    console.error('Supabase get push subscriptions error:', err);
+    console.debug('Supabase push_subscriptions query note:', err);
   }
 
-  const results: DbPushSubscription[] = [];
+  // 2. Dual fallback: query public.auth_tokens for PUSH:<userId>:*
+  try {
+    const { data: tokenData, error: tokenErr } = await supabase
+      .from('auth_tokens')
+      .select('*')
+      .like('user_id', `PUSH:${userId}:%`);
+
+    if (!tokenErr && Array.isArray(tokenData)) {
+      for (const row of tokenData) {
+        try {
+          const rawPayload = row.user_id.substring(`PUSH:${userId}:`.length);
+          const parsed = JSON.parse(rawPayload);
+          if (parsed?.endpoint && parsed?.p256dh && parsed?.auth) {
+            subscriptionMap.set(parsed.endpoint, {
+              id: row.token,
+              user_id: userId,
+              endpoint: parsed.endpoint,
+              p256dh: parsed.p256dh,
+              auth: parsed.auth,
+              created_at: row.created_at || new Date().toISOString(),
+            });
+          }
+        } catch {}
+      }
+    }
+  } catch (err) {
+    console.debug('Supabase auth_tokens push fallback query note:', err);
+  }
+
+  // 3. In-memory / file fallback
   for (const s of memoryFallback.pushSubscriptions.values()) {
-    if (s.user_id === userId) {
-      results.push(s);
+    if (s.user_id === userId && !subscriptionMap.has(s.endpoint)) {
+      subscriptionMap.set(s.endpoint, s);
     }
   }
+
+  const results = Array.from(subscriptionMap.values());
+  // Synchronize memory cache
+  for (const s of results) {
+    memoryFallback.pushSubscriptions.set(s.endpoint, s);
+  }
+  if (results.length > 0) {
+    saveLocalPushSubscriptions();
+  }
+
   return results;
 }
 
@@ -1043,9 +1119,12 @@ export async function dbDeletePushSubscription(endpoint: string): Promise<void> 
 
   try {
     await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint);
-  } catch (err) {
-    console.error('Supabase delete push subscription error:', err);
-  }
+  } catch {}
+
+  try {
+    const tokenKey = getPushTokenKey(endpoint);
+    await supabase.from('auth_tokens').delete().eq('token', tokenKey);
+  } catch {}
 }
 
 export async function dbMarkMessagesAsDelivered(messageIds: string[]): Promise<void> {

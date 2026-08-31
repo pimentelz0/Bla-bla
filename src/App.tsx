@@ -325,6 +325,9 @@ export default function App() {
       if (activeConversationIdRef.current) {
         silentSyncActiveMessages(activeConversationIdRef.current);
       }
+      if (getNotificationPermission() === 'granted') {
+        subscribeUserToWebPush().catch(() => {});
+      }
     };
 
     window.addEventListener('focus', handleImmediateSync);
