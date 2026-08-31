@@ -687,6 +687,7 @@ export function createExpressApp(
     } catch {}
 
     const senderName = senderUser?.username ? `@${senderUser.username}` : 'Blá Blá';
+    console.log(`[MESSAGE_SENT] Msg from ${currentUserId} to ${otherUserId}. Dispatching real-time WebPush...`);
     sendWebPushToUser(
       otherUserId,
       {
@@ -703,7 +704,9 @@ export function createExpressApp(
         },
       },
       broadcastToUser,
-    ).catch((err) => console.error('WebPush background error:', err));
+    ).then((res) => {
+      console.log(`[WebPush_DISPATCH] Result for ${otherUserId}: sent=${res.sentCount}, errors=${res.errors}`);
+    }).catch((err) => console.error('[WebPush_DISPATCH_ERROR]', err));
 
     return res.status(201).json({ message: newMsg });
   });
@@ -723,6 +726,7 @@ export function createExpressApp(
     }
 
     try {
+      console.log(`[PUSH_SUBSCRIBE] Registering push endpoint for user ${currentUserId}`);
       await dbSavePushSubscription({
         userId: currentUserId,
         endpoint: subscription.endpoint,
@@ -734,6 +738,37 @@ export function createExpressApp(
       console.error('Error saving push subscription:', err);
       return res.status(500).json({ error: 'Erro ao registrar notificações Push.' });
     }
+  });
+
+  // Schedule real server test push after delay (to allow user to minimize/lock phone)
+  app.post(['/api/push/test', '/push/test'], authenticate, async (req, res) => {
+    const currentUserId = ((req as any).user as DbUser).id;
+    const currentUser = (req as any).user as DbUser;
+    const { delayMs = 3000 } = req.body || {};
+
+    setTimeout(async () => {
+      try {
+        console.log(`[TEST_PUSH] Triggering scheduled server push for ${currentUserId}`);
+        await sendWebPushToUser(
+          currentUserId,
+          {
+            title: `@${currentUser.username || 'blabla_chat'}`,
+            body: '🔔 Teste de notificação com app fechado funcionando 100%!',
+            icon: currentUser.profile_photo || '/icon-192.png',
+            badge: '/icon-192.png',
+            tag: 'test_push_server',
+            data: {
+              timestamp: Date.now(),
+            },
+          },
+          broadcastToUser,
+        );
+      } catch (err) {
+        console.error('[TEST_PUSH_ERROR]', err);
+      }
+    }, Math.max(500, Math.min(10000, Number(delayMs) || 3000)));
+
+    return res.json({ success: true, message: 'Notificação push agendada no servidor' });
   });
 
   // Unsubscribe Push

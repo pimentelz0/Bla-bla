@@ -1,4 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import fs from 'fs';
+import path from 'path';
 
 function sanitizeSupabaseUrl(inputUrl?: string): string {
   const fallback = 'https://myoicywulrrzfohlsjfe.supabase.co';
@@ -314,7 +316,7 @@ const memoryFallback = {
   messages: new Map<string, DbMessage>(),
   pins: new Map<string, DbPin>(),
   tokens: new Map<string, string>(),
-  pushSubscriptions: new Map<string, DbPushSubscription>(),
+  pushSubscriptions: loadLocalPushSubscriptions(),
 };
 
 let supabaseTablesVerified = false;
@@ -947,6 +949,37 @@ export async function dbDeleteToken(token: string): Promise<void> {
   }
 }
 
+const SUBSCRIPTIONS_FILE = path.join(process.cwd(), '.push-subscriptions.json');
+
+function loadLocalPushSubscriptions(): Map<string, DbPushSubscription> {
+  const map = new Map<string, DbPushSubscription>();
+  try {
+    if (fs.existsSync(SUBSCRIPTIONS_FILE)) {
+      const raw = fs.readFileSync(SUBSCRIPTIONS_FILE, 'utf-8');
+      const list: DbPushSubscription[] = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        for (const item of list) {
+          if (item?.endpoint) {
+            map.set(item.endpoint, item);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load local push subscriptions file:', err);
+  }
+  return map;
+}
+
+function saveLocalPushSubscriptions() {
+  try {
+    const list = Array.from(memoryFallback.pushSubscriptions.values());
+    fs.writeFileSync(SUBSCRIPTIONS_FILE, JSON.stringify(list, null, 2), 'utf-8');
+  } catch (err) {
+    console.warn('Failed to save local push subscriptions file:', err);
+  }
+}
+
 // Push Subscription methods
 export async function dbSavePushSubscription(sub: {
   userId: string;
@@ -965,6 +998,7 @@ export async function dbSavePushSubscription(sub: {
   };
 
   memoryFallback.pushSubscriptions.set(sub.endpoint, record);
+  saveLocalPushSubscriptions();
 
   try {
     await supabase.from('push_subscriptions').upsert(
@@ -983,10 +1017,11 @@ export async function dbGetPushSubscriptionsByUser(userId: string): Promise<DbPu
       .select('*')
       .eq('user_id', userId);
 
-    if (!error && data) {
+    if (!error && data && data.length > 0) {
       for (const s of data) {
         memoryFallback.pushSubscriptions.set(s.endpoint, s);
       }
+      saveLocalPushSubscriptions();
       return data as DbPushSubscription[];
     }
   } catch (err) {
@@ -1004,6 +1039,7 @@ export async function dbGetPushSubscriptionsByUser(userId: string): Promise<DbPu
 
 export async function dbDeletePushSubscription(endpoint: string): Promise<void> {
   memoryFallback.pushSubscriptions.delete(endpoint);
+  saveLocalPushSubscriptions();
 
   try {
     await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint);

@@ -241,6 +241,13 @@ export const api = {
     });
   },
 
+  async triggerServerTestPush(delayMs: number = 3000): Promise<void> {
+    await fetchWithAuth('/api/push/test', {
+      method: 'POST',
+      body: JSON.stringify({ delayMs }),
+    });
+  },
+
   async markDelivered(conversationId: string, messageId?: string): Promise<void> {
     try {
       await fetchWithAuth('/api/messages/delivered', {

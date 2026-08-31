@@ -719,6 +719,9 @@ export default function App() {
         <AuthScreen
           onAuthSuccess={(user) => {
             setCurrentUser(user);
+            if (getNotificationPermission() === 'granted') {
+              subscribeUserToWebPush().catch(() => {});
+            }
           }}
           onShowToast={showToast}
         />

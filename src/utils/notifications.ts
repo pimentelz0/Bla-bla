@@ -186,6 +186,36 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
     const convertedKey = urlBase64ToUint8Array(vapidKey);
 
     let sub = await targetReg.pushManager.getSubscription();
+
+    // Verify existing subscription against current VAPID key
+    if (sub) {
+      try {
+        const rawKey = sub.options.applicationServerKey;
+        if (rawKey) {
+          const keyArray = new Uint8Array(rawKey);
+          let match = keyArray.length === convertedKey.length;
+          if (match) {
+            for (let i = 0; i < keyArray.length; i++) {
+              if (keyArray[i] !== convertedKey[i]) {
+                match = false;
+                break;
+              }
+            }
+          }
+          if (!match) {
+            console.debug('VAPID key mismatch in existing subscription, renewing...');
+            await sub.unsubscribe();
+            sub = null;
+          }
+        }
+      } catch {
+        try {
+          await sub.unsubscribe();
+        } catch {}
+        sub = null;
+      }
+    }
+
     if (!sub) {
       sub = await targetReg.pushManager.subscribe({
         userVisibleOnly: true,

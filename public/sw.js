@@ -68,43 +68,52 @@ self.addEventListener('message', (event) => {
 
 // Handle push events (Wakes up mobile device when app is completely closed)
 self.addEventListener('push', (event) => {
-  if (!event.data) return;
+  let title = 'Blá Blá';
+  let body = 'Nova mensagem recebida';
+  let icon = '/icon-192.png';
+  let tag = 'blabla_msg';
+  let data = {};
 
-  try {
-    const payload = event.data.json();
-    const title = payload.title || 'Blá Blá';
-    const tag = payload.tag || (payload.data?.conversationId ? `chat_${payload.data.conversationId}` : 'blabla_msg');
-    const options = {
-      body: payload.body || 'Nova mensagem recebida',
-      icon: payload.icon || '/icon-192.png',
-      badge: '/icon-192.png',
-      vibrate: [200, 100, 200],
-      tag: tag,
-      renotify: true,
-      data: payload.data || {},
-      actions: [
-        { action: 'open', title: '💬 Abrir conversa' }
-      ]
-    };
-
-    const promises = [self.registration.showNotification(title, options)];
-
-    // Notify server that message was delivered to device
-    if (payload.data?.messageId) {
-      promises.push(
-        fetch('/api/messages/delivered', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            messageId: payload.data.messageId,
-            conversationId: payload.data.conversationId,
-          }),
-        }).catch(() => {})
-      );
+  if (event.data) {
+    try {
+      const payload = event.data.json();
+      if (payload.title) title = payload.title;
+      if (payload.body) body = payload.body;
+      if (payload.icon) icon = payload.icon;
+      if (payload.data) data = payload.data;
+      if (payload.tag) tag = payload.tag;
+      else if (data?.conversationId) tag = `chat_${data.conversationId}`;
+    } catch (e) {
+      try {
+        body = event.data.text() || body;
+      } catch (textErr) {}
     }
+  }
 
-    event.waitUntil(Promise.all(promises));
-  } catch (err) {
-    console.error('Error in push event handler:', err);
+  const options = {
+    body,
+    icon,
+    badge: '/icon-192.png',
+    vibrate: [200, 100, 200],
+    tag,
+    renotify: true,
+    data,
+  };
+
+  const showPromise = self.registration.showNotification(title, options);
+
+  if (data?.messageId) {
+    const ackPromise = fetch('/api/messages/delivered', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messageId: data.messageId,
+        conversationId: data.conversationId,
+      }),
+    }).catch(() => {});
+
+    event.waitUntil(Promise.all([showPromise, ackPromise]));
+  } else {
+    event.waitUntil(showPromise);
   }
 });

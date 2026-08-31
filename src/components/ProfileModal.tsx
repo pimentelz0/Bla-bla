@@ -11,6 +11,7 @@ import {
   scheduleBackgroundNotification,
   requestNotificationPermission,
   getNotificationPermission,
+  subscribeUserToWebPush,
   isInIframe,
   isIOS,
   isStandalone,
@@ -393,9 +394,15 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     onClick={async () => {
                       setErrorMsg(null);
                       setScheduledCountdown(5);
-                      setSuccessMsg('⏳ Bloqueie a tela ou saia do app agora! Notificação estilo WhatsApp em 5s...');
+                      setSuccessMsg('⏳ Bloqueie a tela ou feche o app agora! Notificação na barra em 5s...');
 
-                      // Schedule in Service Worker
+                      // 1. Ensure user is subscribed to server Web Push
+                      await subscribeUserToWebPush().catch(() => {});
+
+                      // 2. Dispatch real server push after 5 seconds from the backend
+                      api.triggerServerTestPush(5000).catch(() => {});
+
+                      // 3. Also schedule in Service Worker locally as dual guarantee
                       await scheduleBackgroundNotification(
                         '@carlos_souza',
                         {
