@@ -64,7 +64,11 @@ export default function App() {
   const activeConversationIdRef = useRef<string | null>(null);
   activeConversationIdRef.current = activeConversationId;
 
+  const activeMessagesRef = useRef<Message[]>([]);
+  activeMessagesRef.current = activeMessages;
+
   const processedMessageIdsRef = useRef<Set<string>>(new Set());
+  const lastImmediateSyncRef = useRef<number>(0);
 
   // Initialize service worker & audio unlock on app mount
   useEffect(() => {
@@ -281,28 +285,32 @@ export default function App() {
     [showToast],
   );
 
-  // Silent sync messages for active chat in background
+  // Silent sync messages for active chat in background (incremental by timestamp)
   const silentSyncActiveMessages = useCallback(
     async (convId: string) => {
       if (!currentUser || !convId) return;
       try {
-        const res = await api.getMessages(convId);
-        setActiveMessages((prev) => {
-          let hasChange = false;
-          const existingIds = new Set(prev.map((m) => m.id));
-          const toAdd: Message[] = [];
+        const currentMsgs = activeMessagesRef.current;
+        const latestMsg = currentMsgs[currentMsgs.length - 1];
+        const since = latestMsg?.created_at;
 
-          res.messages.forEach((m) => {
-            if (!existingIds.has(m.id)) {
-              toAdd.push(m);
-              hasChange = true;
-              processedMessageIdsRef.current.add(m.id);
-            }
+        const res = await api.getMessages(convId, { since });
+        if (res.messages && res.messages.length > 0) {
+          setActiveMessages((prev) => {
+            const existingIds = new Set(prev.map((m) => m.id));
+            const toAdd: Message[] = [];
+
+            res.messages.forEach((m) => {
+              if (!existingIds.has(m.id)) {
+                toAdd.push(m);
+                processedMessageIdsRef.current.add(m.id);
+              }
+            });
+
+            if (toAdd.length === 0) return prev;
+            return [...prev, ...toAdd];
           });
-
-          if (!hasChange) return prev;
-          return [...prev, ...toAdd];
-        });
+        }
       } catch {
         // silent
       }
@@ -318,27 +326,29 @@ export default function App() {
     }
   }, [activeConversationId, loadMessages]);
 
-  // Continuous Fast Auto-Sync Engine (Multi-layer resilience)
+  // Resilient, Low-Egress Safety Sync Engine (Backup to Supabase Realtime)
   useEffect(() => {
     if (!currentUser) return;
 
-    // 1. Periodic background sync - runs continuously
-    const pollInterval = window.setInterval(() => {
+    // 1. Spaced periodic safety backup (45s) - only active if document is visible
+    const safetyBackupInterval = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
       silentSyncConversations();
       if (activeConversationIdRef.current) {
         silentSyncActiveMessages(activeConversationIdRef.current);
       }
-    }, 2000);
+    }, 45000);
 
-    // 2. Active chat high-frequency sync (1.2s)
-    const activeChatInterval = window.setInterval(() => {
-      if (activeConversationIdRef.current) {
-        silentSyncActiveMessages(activeConversationIdRef.current);
-      }
-    }, 1200);
-
-    // 3. Instant triggers on focus, visibility change, and online
+    // 2. Throttled event triggers on focus, online, and visibility change
     const handleImmediateSync = () => {
+      const now = Date.now();
+      if (now - lastImmediateSyncRef.current < 15000) {
+        return; // Throttle event-driven sync to max once every 15s
+      }
+      lastImmediateSyncRef.current = now;
+
       silentSyncConversations();
       if (activeConversationIdRef.current) {
         silentSyncActiveMessages(activeConversationIdRef.current);
@@ -353,8 +363,7 @@ export default function App() {
     document.addEventListener('visibilitychange', handleImmediateSync);
 
     return () => {
-      clearInterval(pollInterval);
-      clearInterval(activeChatInterval);
+      clearInterval(safetyBackupInterval);
       window.removeEventListener('focus', handleImmediateSync);
       window.removeEventListener('online', handleImmediateSync);
       document.removeEventListener('visibilitychange', handleImmediateSync);
@@ -379,9 +388,6 @@ export default function App() {
           if (prev.some((m) => m.id === msg.id)) return prev;
           return [...prev, msg];
         });
-        if (msg.receiver_id === currentUser?.id) {
-          api.getMessages(conversationId).catch(() => {});
-        }
       }
 
       // 2. Notification handling (Audio, Native Notification Bar & In-app Banner)

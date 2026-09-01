@@ -26,6 +26,8 @@ import {
   dbCountUnreadMessages,
   dbGetUserPins,
   dbSetPin,
+  dbFindUsersByIds,
+  dbGetBatchUnreadCounts,
   dbSaveToken,
   dbDeleteToken,
   dbDeleteConversation,
@@ -395,16 +397,23 @@ export function createExpressApp(
     const currentUserId = ((req as any).user as DbUser).id;
     const onlineSet = getOnlineUserIds();
 
-    const userPins = await dbGetUserPins(currentUserId);
+    const [userPins, conversations, unreadMap] = await Promise.all([
+      dbGetUserPins(currentUserId),
+      dbGetUserConversations(currentUserId),
+      dbGetBatchUnreadCounts(currentUserId),
+    ]);
+
     const pinMap = new Map<string, number>();
     userPins.forEach((p) => pinMap.set(p.conversation_id, p.position));
 
-    const conversations = await dbGetUserConversations(currentUserId);
+    // Batch fetch all other users in a single operation
+    const otherUserIds = conversations.map((c) => (c.user_1 === currentUserId ? c.user_2 : c.user_1));
+    const userMap = await dbFindUsersByIds(otherUserIds);
 
     const summaries = await Promise.all(
       conversations.map(async (c) => {
         const otherUserId = c.user_1 === currentUserId ? c.user_2 : c.user_1;
-        const otherUser = (await dbFindUserById(otherUserId)) || {
+        const otherUser = userMap.get(otherUserId) || {
           id: otherUserId,
           username: 'desconhecido',
           profile_photo: DEFAULT_AVATARS[0],
@@ -415,17 +424,40 @@ export function createExpressApp(
           salt: '',
         };
 
-        const unreadCount = await dbCountUnreadMessages(c.id, currentUserId);
+        const unreadCount = unreadMap.get(c.id) || 0;
         const isPinned = pinMap.has(c.id);
         const isMuted = await dbIsMuted(currentUserId, c.id);
         const isArchived = await dbIsArchived(currentUserId, c.id);
         const isBlocked = await dbIsBlocked(currentUserId, otherUserId);
         const isManualUnread = await dbIsManualUnread(currentUserId, c.id);
 
+        // Sanitize legacy last_message if it contains raw Base64 media data
+        let cleanLastMessage = c.last_message || '';
+        if (cleanLastMessage.includes('data:image/') || cleanLastMessage.includes('data:audio/') || cleanLastMessage.length > 500) {
+          try {
+            if (cleanLastMessage.startsWith('{') && cleanLastMessage.endsWith('}')) {
+              const parsed = JSON.parse(cleanLastMessage);
+              if (parsed.type === 'image') cleanLastMessage = parsed.caption ? `📷 Foto • ${parsed.caption}` : '📷 Foto';
+              else if (parsed.type === 'audio') cleanLastMessage = '🎤 Áudio';
+              else if (parsed.type === 'sticker') cleanLastMessage = '🎭 Figurinha';
+            } else if (cleanLastMessage.startsWith('[IMG]')) {
+              cleanLastMessage = '📷 Foto';
+            } else if (cleanLastMessage.startsWith('[AUDIO]')) {
+              cleanLastMessage = '🎤 Áudio';
+            } else if (cleanLastMessage.startsWith('[STICKER]')) {
+              cleanLastMessage = '🎭 Figurinha';
+            } else {
+              cleanLastMessage = cleanLastMessage.substring(0, 150) + '...';
+            }
+          } catch {
+            cleanLastMessage = '📷 Foto';
+          }
+        }
+
         return {
           id: c.id,
           other_user: sanitizeUser(otherUser, onlineSet),
-          last_message: c.last_message || '',
+          last_message: cleanLastMessage,
           last_message_at: c.last_message_at || c.updated_at || c.created_at,
           last_sender_id: c.last_sender_id,
           unread_count: isManualUnread ? Math.max(1, unreadCount) : unreadCount,
@@ -579,16 +611,20 @@ export function createExpressApp(
   app.get(['/api/conversations/:id/messages', '/conversations/:id/messages'], authenticate, async (req, res) => {
     const currentUserId = ((req as any).user as DbUser).id;
     const convId = req.params.id;
+    const since = typeof req.query.since === 'string' ? req.query.since : undefined;
+    const limit = req.query.limit ? Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10))) : 50;
 
     const conv = await dbGetConversationById(convId);
     if (!conv || (conv.user_1 !== currentUserId && conv.user_2 !== currentUserId)) {
       return res.status(403).json({ error: 'Você não tem permissão para ver esta conversa.' });
     }
 
-    // Mark unread as read in Supabase
-    await dbMarkMessagesAsRead(convId, currentUserId);
+    // Mark unread as read in Supabase when loading initial conversation or full view
+    if (!since) {
+      await dbMarkMessagesAsRead(convId, currentUserId);
+    }
 
-    const convMessages = await dbGetMessages(convId);
+    const convMessages = await dbGetMessages(convId, { since, limit });
     const otherUserId = conv.user_1 === currentUserId ? conv.user_2 : conv.user_1;
     const otherUser = (await dbFindUserById(otherUserId)) || {
       id: otherUserId,
@@ -601,10 +637,12 @@ export function createExpressApp(
       salt: '',
     };
 
-    broadcastToUser(otherUserId, {
-      type: 'message:read',
-      payload: { conversation_id: convId, reader_id: currentUserId },
-    });
+    if (!since) {
+      broadcastToUser(otherUserId, {
+        type: 'message:read',
+        payload: { conversation_id: convId, reader_id: currentUserId },
+      });
+    }
 
     return res.json({
       conversation_id: convId,
@@ -665,10 +703,36 @@ export function createExpressApp(
       read: false,
     };
 
-    // 1. Save message to Supabase
+    // Extract lightweight summary for last_message to prevent storing large Base64 in conversations table
+    let lastMessageSummary = cleanText;
+    try {
+      if (cleanText.startsWith('{') && cleanText.endsWith('}')) {
+        const parsed = JSON.parse(cleanText);
+        if (parsed.type === 'image') {
+          lastMessageSummary = parsed.caption ? `📷 Foto • ${parsed.caption}` : '📷 Foto';
+        } else if (parsed.type === 'audio') {
+          const dur = parsed.duration ? `${Math.floor(parsed.duration / 60)}:${Math.floor(parsed.duration % 60).toString().padStart(2, '0')}` : '';
+          lastMessageSummary = dur ? `🎤 Áudio (${dur})` : '🎤 Áudio';
+        } else if (parsed.type === 'sticker') {
+          lastMessageSummary = '🎭 Figurinha';
+        }
+      } else if (cleanText.startsWith('[IMG]')) {
+        lastMessageSummary = '📷 Foto';
+      } else if (cleanText.startsWith('[AUDIO]')) {
+        lastMessageSummary = '🎤 Áudio';
+      } else if (cleanText.startsWith('[STICKER]')) {
+        lastMessageSummary = '🎭 Figurinha';
+      }
+    } catch {}
+
+    if (lastMessageSummary.length > 200) {
+      lastMessageSummary = lastMessageSummary.substring(0, 197) + '...';
+    }
+
+    // 1. Save message to Supabase messages table
     await dbCreateMessage(newMsg);
-    // Update conversation last message in Supabase
-    await dbUpdateConversationLastMessage(convId, cleanText, now, currentUserId);
+    // 2. Update conversation with lightweight summary in Supabase
+    await dbUpdateConversationLastMessage(convId, lastMessageSummary, now, currentUserId);
 
     const senderUser = await dbFindUserById(currentUserId);
     const onlineSet = getOnlineUserIds();

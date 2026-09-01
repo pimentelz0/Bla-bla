@@ -10,6 +10,8 @@ const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
+const userProfileCache = new Map<string, User>();
+
 interface UseSocketProps {
   currentUser: User | null;
   onNewMessage?: (msg: Message, conversationId: string, sender?: User) => void;
@@ -75,25 +77,30 @@ export function useSocket({
 
               let senderUser: User | undefined;
               if (newRow.sender_id && newRow.sender_id !== currentUser.id) {
-                try {
-                  const { data } = await supabaseClient
-                    .from('users')
-                    .select('id, username, profile_photo, created_at, updated_at, last_seen')
-                    .eq('id', newRow.sender_id)
-                    .single();
-                  if (data) {
-                    senderUser = {
-                      id: data.id,
-                      username: data.username,
-                      profile_photo: data.profile_photo,
-                      created_at: data.created_at,
-                      updated_at: data.updated_at,
-                      last_seen: data.last_seen,
-                      is_online: true,
-                    };
+                if (userProfileCache.has(newRow.sender_id)) {
+                  senderUser = userProfileCache.get(newRow.sender_id);
+                } else {
+                  try {
+                    const { data } = await supabaseClient
+                      .from('users')
+                      .select('id, username, profile_photo, created_at, updated_at, last_seen')
+                      .eq('id', newRow.sender_id)
+                      .single();
+                    if (data) {
+                      senderUser = {
+                        id: data.id,
+                        username: data.username,
+                        profile_photo: data.profile_photo,
+                        created_at: data.created_at,
+                        updated_at: data.updated_at,
+                        last_seen: data.last_seen,
+                        is_online: true,
+                      };
+                      userProfileCache.set(newRow.sender_id, senderUser);
+                    }
+                  } catch (err) {
+                    console.debug('Failed to fetch sender details for notification:', err);
                   }
-                } catch (err) {
-                  console.debug('Failed to fetch sender details for notification:', err);
                 }
 
                 if (!senderUser) {

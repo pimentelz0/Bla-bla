@@ -702,32 +702,107 @@ export async function dbUpdateConversationLastMessage(
 }
 
 // Message methods
-export async function dbGetMessages(convId: string): Promise<DbMessage[]> {
+export async function dbGetMessages(
+  convId: string,
+  options?: { since?: string; limit?: number },
+): Promise<DbMessage[]> {
+  const limit = options?.limit ?? 50;
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('messages')
-      .select('*')
-      .eq('conversation_id', convId)
-      .order('created_at', { ascending: true });
+      .select('id, conversation_id, sender_id, receiver_id, message, created_at, delivered, read')
+      .eq('conversation_id', convId);
+
+    if (options?.since) {
+      query = query.gt('created_at', options.since).order('created_at', { ascending: true }).limit(limit);
+    } else {
+      query = query.order('created_at', { ascending: false }).limit(limit);
+    }
+
+    const { data, error } = await query;
 
     if (!error && data) {
-      for (const m of data) {
+      const sorted = options?.since ? (data as DbMessage[]) : (data as DbMessage[]).reverse();
+      for (const m of sorted) {
         memoryFallback.messages.set(m.id, m);
       }
-      return data as DbMessage[];
+      return sorted;
     }
   } catch (err) {
     console.error('Supabase get messages error:', err);
   }
 
-  const msgs: DbMessage[] = [];
+  let msgs: DbMessage[] = [];
   for (const m of memoryFallback.messages.values()) {
     if (m.conversation_id === convId) {
-      msgs.push(m);
+      if (options?.since) {
+        if (new Date(m.created_at).getTime() > new Date(options.since).getTime()) {
+          msgs.push(m);
+        }
+      } else {
+        msgs.push(m);
+      }
     }
   }
   msgs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  if (!options?.since && msgs.length > limit) {
+    msgs = msgs.slice(-limit);
+  }
   return msgs;
+}
+
+export async function dbFindUsersByIds(ids: string[]): Promise<Map<string, DbUser>> {
+  const userMap = new Map<string, DbUser>();
+  const missingIds: string[] = [];
+
+  for (const id of ids) {
+    const inMem = memoryFallback.users.get(id);
+    if (inMem) {
+      userMap.set(id, inMem);
+    } else {
+      missingIds.push(id);
+    }
+  }
+
+  if (missingIds.length > 0) {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .in('id', missingIds);
+
+      if (!error && data) {
+        for (const u of data) {
+          memoryFallback.users.set(u.id, u);
+          userMap.set(u.id, u as DbUser);
+        }
+      }
+    } catch (err) {
+      console.error('Supabase find users by ids error:', err);
+    }
+  }
+
+  return userMap;
+}
+
+export async function dbGetBatchUnreadCounts(userId: string): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .select('conversation_id')
+      .eq('receiver_id', userId)
+      .eq('read', false);
+
+    if (!error && data) {
+      for (const row of data) {
+        counts.set(row.conversation_id, (counts.get(row.conversation_id) || 0) + 1);
+      }
+    }
+  } catch (err) {
+    console.error('Supabase batch unread counts error:', err);
+  }
+  return counts;
 }
 
 export async function dbCreateMessage(msg: DbMessage): Promise<void> {

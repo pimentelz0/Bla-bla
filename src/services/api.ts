@@ -209,9 +209,16 @@ export const api = {
     });
   },
 
-  async getMessages(conversationId: string): Promise<{ conversation_id: string; other_user: User; messages: Message[] }> {
+  async getMessages(
+    conversationId: string,
+    options?: { since?: string; limit?: number },
+  ): Promise<{ conversation_id: string; other_user: User; messages: Message[] }> {
+    const params = new URLSearchParams();
+    if (options?.since) params.set('since', options.since);
+    if (options?.limit) params.set('limit', String(options.limit));
+    const qs = params.toString();
     return await fetchWithAuth<{ conversation_id: string; other_user: User; messages: Message[] }>(
-      `/api/conversations/${conversationId}/messages`,
+      `/api/conversations/${conversationId}/messages${qs ? `?${qs}` : ''}`,
     );
   },
 
