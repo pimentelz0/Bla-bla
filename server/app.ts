@@ -814,10 +814,20 @@ export function createExpressApp(
 
   // Save Push Subscription
   app.post(['/api/push/subscribe', '/push/subscribe'], authenticate, async (req, res) => {
-    const currentUserId = ((req as any).user as DbUser).id;
-    const { subscription } = req.body || {};
+    const currentUserId = ((req as any).user as DbUser)?.id;
+    const body = req.body || {};
+    const subscription = body.subscription || body;
 
-    if (!subscription || !subscription.endpoint || !subscription.keys) {
+    const hasEndpoint = Boolean(subscription?.endpoint);
+    const hasKeys = Boolean(subscription?.keys?.p256dh && subscription?.keys?.auth);
+    const isValid = Boolean(hasEndpoint && hasKeys);
+
+    console.log(`[Push Subscribe] userId: ${currentUserId}`);
+    console.log(`[Push Subscribe] subscriptionReceived: ${isValid ? 'true' : 'false'}`);
+
+    if (!isValid) {
+      console.log(`[Push Subscribe] subscriptionSaved: false`);
+      console.log(`[Push Subscribe] error: Inscrição Push inválida ou sem chaves.`);
       return res.status(400).json({ error: 'Inscrição Push inválida.' });
     }
 
@@ -828,10 +838,11 @@ export function createExpressApp(
         p256dh: subscription.keys.p256dh,
         auth: subscription.keys.auth,
       });
-      console.log(`[Push Subscribe]\nuserId: ${currentUserId}\nsubscriptionSaved: true`);
+      console.log(`[Push Subscribe] subscriptionSaved: true`);
       return res.json({ success: true, result: 'created/updated' });
     } catch (err: any) {
-      console.error(`[Push Subscribe]\nuserId: ${currentUserId}\nsubscriptionSaved: false`, err);
+      console.log(`[Push Subscribe] subscriptionSaved: false`);
+      console.error(`[Push Subscribe] error:`, err?.message || err);
       return res.status(500).json({ error: 'Erro ao registrar notificações Push.' });
     }
   });

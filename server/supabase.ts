@@ -235,7 +235,7 @@ CREATE TABLE IF NOT EXISTS public.messages (
 
 CREATE TABLE IF NOT EXISTS public.push_subscriptions (
   id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
   endpoint TEXT NOT NULL UNIQUE,
   p256dh TEXT NOT NULL,
   auth TEXT NOT NULL,
@@ -244,6 +244,11 @@ CREATE TABLE IF NOT EXISTS public.push_subscriptions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id ON public.push_subscriptions(user_id);
+
+ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all on push_subscriptions" ON public.push_subscriptions;
+CREATE POLICY "Allow all on push_subscriptions" ON public.push_subscriptions FOR ALL USING (true) WITH CHECK (true);
+GRANT ALL ON TABLE public.push_subscriptions TO anon, authenticated, service_role, postgres;
 
 CREATE TABLE IF NOT EXISTS public.pins (
   id TEXT PRIMARY KEY,
@@ -1120,6 +1125,7 @@ export async function dbSavePushSubscription(sub: {
       { onConflict: 'endpoint' },
     );
     if (pushTableErr) {
+      console.warn('[SUPABASE_PUSH_SUB_UPSERT_WARN]', pushTableErr.message || pushTableErr);
       // Fallback in case table constraint is on id or custom:
       const { data: existing } = await supabase
         .from('push_subscriptions')
@@ -1128,16 +1134,18 @@ export async function dbSavePushSubscription(sub: {
         .maybeSingle();
 
       if (existing?.id) {
-        await supabase
+        const { error: updateErr } = await supabase
           .from('push_subscriptions')
           .update({ user_id: sub.userId, p256dh: sub.p256dh, auth: sub.auth, updated_at: now })
           .eq('endpoint', sub.endpoint);
+        if (updateErr) console.warn('[SUPABASE_PUSH_SUB_UPDATE_WARN]', updateErr.message || updateErr);
       } else {
-        await supabase.from('push_subscriptions').upsert([record], { onConflict: 'id' });
+        const { error: insertErr } = await supabase.from('push_subscriptions').insert([record]);
+        if (insertErr) console.warn('[SUPABASE_PUSH_SUB_INSERT_WARN]', insertErr.message || insertErr);
       }
     }
-  } catch (err) {
-    console.debug('Supabase push_subscriptions table write note:', err);
+  } catch (err: any) {
+    console.warn('Supabase push_subscriptions table write note:', err?.message || err);
   }
 
   // 2. Guaranteed fallback storage: public.auth_tokens table (always exists in project database)
@@ -1179,9 +1187,11 @@ export async function dbGetPushSubscriptionsByUser(userId: string): Promise<DbPu
           subscriptionMap.set(s.endpoint, s as DbPushSubscription);
         }
       }
+    } else if (pushErr) {
+      console.warn('[SUPABASE_PUSH_LOOKUP_WARN]', pushErr.message || pushErr);
     }
-  } catch (err) {
-    console.debug('Supabase push_subscriptions query note:', err);
+  } catch (err: any) {
+    console.warn('Supabase push_subscriptions query note:', err?.message || err);
   }
 
   // 2. Dual fallback: query public.auth_tokens for PUSH:<userId>:*
@@ -1230,11 +1240,8 @@ export async function dbGetPushSubscriptionsByUser(userId: string): Promise<DbPu
     saveLocalPushSubscriptions();
   }
 
-  if (results.length === 0) {
-    console.log(`[Push Lookup]\nuserId: ${userId}\nsubscriptionsFound: 0\n[Push Lookup] NO SUBSCRIPTION FOUND`);
-  } else {
-    console.log(`[Push Lookup]\nuserId: ${userId}\nsubscriptionsFound: ${results.length}`);
-  }
+  console.log(`[Push Lookup] userId: ${userId}`);
+  console.log(`[Push Lookup] subscriptionsFound: ${results.length}`);
 
   return results;
 }

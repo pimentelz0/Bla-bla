@@ -1,6 +1,6 @@
 // Web & Mobile Notification & Audio Chime Helper for WhatsApp-like alerts
 
-import { api } from '../services/api';
+import { api, getStoredUser } from '../services/api';
 
 let audioCtx: AudioContext | null = null;
 
@@ -293,8 +293,9 @@ export async function syncWebPushSubscription(userId?: string): Promise<boolean>
     }
 
     if (sub) {
-      const p256dhKey = sub.getKey ? arrayBufferToBase64(sub.getKey('p256dh')) : (sub.toJSON()?.keys?.p256dh || '');
-      const authKey = sub.getKey ? arrayBufferToBase64(sub.getKey('auth')) : (sub.toJSON()?.keys?.auth || '');
+      const subJson = sub.toJSON ? sub.toJSON() : null;
+      const p256dhKey = subJson?.keys?.p256dh || (sub.getKey ? arrayBufferToBase64(sub.getKey('p256dh')) : '');
+      const authKey = subJson?.keys?.auth || (sub.getKey ? arrayBufferToBase64(sub.getKey('auth')) : '');
 
       const payload = {
         endpoint: sub.endpoint,
@@ -335,8 +336,9 @@ export async function syncWebPushSubscription(userId?: string): Promise<boolean>
             applicationServerKey: convertedKey,
           });
           if (freshSub) {
-            const p256dhKey = freshSub.getKey ? arrayBufferToBase64(freshSub.getKey('p256dh')) : (freshSub.toJSON()?.keys?.p256dh || '');
-            const authKey = freshSub.getKey ? arrayBufferToBase64(freshSub.getKey('auth')) : (freshSub.toJSON()?.keys?.auth || '');
+            const freshJson = freshSub.toJSON ? freshSub.toJSON() : null;
+            const p256dhKey = freshJson?.keys?.p256dh || (freshSub.getKey ? arrayBufferToBase64(freshSub.getKey('p256dh')) : '');
+            const authKey = freshJson?.keys?.auth || (freshSub.getKey ? arrayBufferToBase64(freshSub.getKey('auth')) : '');
 
             await api.savePushSubscription({
               endpoint: freshSub.endpoint,
@@ -365,7 +367,8 @@ export async function syncWebPushSubscription(userId?: string): Promise<boolean>
 }
 
 export async function subscribeUserToWebPush(userId?: string): Promise<boolean> {
-  return await syncWebPushSubscription(userId);
+  const targetUserId = userId || getStoredUser()?.id;
+  return await syncWebPushSubscription(targetUserId);
 }
 
 export async function requestNotificationPermission(): Promise<NotificationPermission> {
@@ -373,7 +376,8 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
   try {
     const perm = await Notification.requestPermission();
     if (perm === 'granted') {
-      subscribeUserToWebPush().catch(() => {});
+      const storedUser = getStoredUser();
+      subscribeUserToWebPush(storedUser?.id).catch(() => {});
     }
     return perm;
   } catch (err) {
