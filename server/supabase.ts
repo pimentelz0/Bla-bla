@@ -181,6 +181,7 @@ export interface DbPushSubscription {
   p256dh: string;
   auth: string;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface DbPin {
@@ -238,8 +239,11 @@ CREATE TABLE IF NOT EXISTS public.push_subscriptions (
   endpoint TEXT NOT NULL UNIQUE,
   p256dh TEXT NOT NULL,
   auth TEXT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id ON public.push_subscriptions(user_id);
 
 CREATE TABLE IF NOT EXISTS public.pins (
   id TEXT PRIMARY KEY,
@@ -1093,7 +1097,8 @@ export async function dbSavePushSubscription(sub: {
   p256dh: string;
   auth: string;
 }): Promise<void> {
-  const id = `push_${Buffer.from(sub.endpoint).toString('base64').substring(0, 32)}`;
+  const hash = crypto.createHash('sha256').update(sub.endpoint).digest('hex').substring(0, 32);
+  const id = `push_${hash}`;
   const now = new Date().toISOString();
   const record: DbPushSubscription = {
     id,
@@ -1102,6 +1107,7 @@ export async function dbSavePushSubscription(sub: {
     p256dh: sub.p256dh,
     auth: sub.auth,
     created_at: now,
+    updated_at: now,
   };
 
   memoryFallback.pushSubscriptions.set(sub.endpoint, record);
@@ -1124,7 +1130,7 @@ export async function dbSavePushSubscription(sub: {
       if (existing?.id) {
         await supabase
           .from('push_subscriptions')
-          .update({ user_id: sub.userId, p256dh: sub.p256dh, auth: sub.auth, created_at: now })
+          .update({ user_id: sub.userId, p256dh: sub.p256dh, auth: sub.auth, updated_at: now })
           .eq('endpoint', sub.endpoint);
       } else {
         await supabase.from('push_subscriptions').upsert([record], { onConflict: 'id' });
@@ -1198,6 +1204,7 @@ export async function dbGetPushSubscriptionsByUser(userId: string): Promise<DbPu
               p256dh: parsed.p256dh,
               auth: parsed.auth,
               created_at: row.created_at || new Date().toISOString(),
+              updated_at: row.created_at || new Date().toISOString(),
             });
           }
         } catch {}
@@ -1221,6 +1228,12 @@ export async function dbGetPushSubscriptionsByUser(userId: string): Promise<DbPu
   }
   if (results.length > 0) {
     saveLocalPushSubscriptions();
+  }
+
+  if (results.length === 0) {
+    console.log(`[Push Lookup]\nuserId: ${userId}\nsubscriptionsFound: 0\n[Push Lookup] NO SUBSCRIPTION FOUND`);
+  } else {
+    console.log(`[Push Lookup]\nuserId: ${userId}\nsubscriptionsFound: ${results.length}`);
   }
 
   return results;

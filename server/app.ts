@@ -789,7 +789,6 @@ export function createExpressApp(
 
     // 3. AWAIT Web Push dispatch so Vercel Serverless Function does not freeze execution before gateway delivery
     try {
-      console.log(`[MESSAGE_SENT] Msg from ${currentUserId} to ${otherUserId}. Awaiting WebPush before response...`);
       // Use Promise.race with a 3-second ceiling so API responds quickly even if external push gateway is sluggish
       const pushPromise = sendWebPushToUser(otherUserId, pushPayload, broadcastToUser);
       const timeoutPromise = new Promise<{ sentCount: number; errors: number }>((resolve) =>
@@ -797,10 +796,11 @@ export function createExpressApp(
       );
 
       const pushResult = await Promise.race([pushPromise, timeoutPromise]);
-      console.log(`[WebPush_DISPATCH] Result for ${otherUserId}: sent=${pushResult.sentCount}, errors=${pushResult.errors}`);
+      const totalSubscriptions = pushResult.sentCount + pushResult.errors;
+      const pushDispatchStatus = pushResult.sentCount > 0 ? 'success' : totalSubscriptions === 0 ? 'no_subscriptions' : 'failed';
+      console.log(`[Push Message]\nsenderId: ${currentUserId}\nreceiverId: ${otherUserId}\nsubscriptionsFound: ${totalSubscriptions}\npushDispatch: ${pushDispatchStatus}`);
     } catch (pushErr) {
-      // 4. Log error without blocking the message response
-      console.error('[WebPush_DISPATCH_ERROR] Error while dispatching Web Push:', pushErr);
+      console.error(`[Push Message]\nsenderId: ${currentUserId}\nreceiverId: ${otherUserId}\npushDispatch: error`, pushErr);
     }
 
     // 5. Return message response normally
@@ -828,10 +828,10 @@ export function createExpressApp(
         p256dh: subscription.keys.p256dh,
         auth: subscription.keys.auth,
       });
-      console.log(`[Push Subscribe]\nuserId: ${currentUserId}\nsubscription endpoint: presente\nresult: created/updated`);
+      console.log(`[Push Subscribe]\nuserId: ${currentUserId}\nsubscriptionSaved: true`);
       return res.json({ success: true, result: 'created/updated' });
     } catch (err: any) {
-      console.error(`[Push Subscribe]\nuserId: ${currentUserId}\nsubscription endpoint: presente\nresult: error`, err);
+      console.error(`[Push Subscribe]\nuserId: ${currentUserId}\nsubscriptionSaved: false`, err);
       return res.status(500).json({ error: 'Erro ao registrar notificações Push.' });
     }
   });
