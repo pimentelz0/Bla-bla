@@ -18,6 +18,7 @@ import {
   getNotificationPermission,
   requestNotificationPermission,
   subscribeUserToWebPush,
+  syncWebPushSubscription,
   registerServiceWorker,
   initAudioUnlock,
   updateAppBadgeAndTitle,
@@ -106,9 +107,24 @@ export default function App() {
 
   // Automatically ensure push notifications subscription is active whenever currentUser is logged in
   useEffect(() => {
-    if (currentUser && getNotificationPermission() === 'granted') {
-      subscribeUserToWebPush().catch(() => {});
+    if (currentUser?.id && getNotificationPermission() === 'granted') {
+      syncWebPushSubscription(currentUser.id).catch(() => {});
     }
+  }, [currentUser?.id]);
+
+  // Sync on app visibility / return to focus if logged in and granted
+  useEffect(() => {
+    const handleFocusSync = () => {
+      if (document.visibilityState === 'visible' && currentUser?.id && getNotificationPermission() === 'granted') {
+        syncWebPushSubscription(currentUser.id).catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', handleFocusSync);
+    window.addEventListener('focus', handleFocusSync);
+    return () => {
+      document.removeEventListener('visibilitychange', handleFocusSync);
+      window.removeEventListener('focus', handleFocusSync);
+    };
   }, [currentUser?.id]);
 
   const handleRequestNotificationPermission = async () => {
@@ -116,7 +132,9 @@ export default function App() {
     setNotificationPermission(perm);
     setShowNotificationPrompt(false);
     if (perm === 'granted') {
-      await subscribeUserToWebPush().catch(() => {});
+      if (currentUser?.id) {
+        await syncWebPushSubscription(currentUser.id).catch(() => {});
+      }
       showToast('Notificações no sistema ativadas!', 'success');
       playNotificationSound();
       sendBrowserNotification('Blá Blá', {
@@ -133,8 +151,8 @@ export default function App() {
       try {
         const fresh = await api.getMe();
         setCurrentUser(fresh);
-        if (getNotificationPermission() === 'granted') {
-          subscribeUserToWebPush().catch(() => {});
+        if (fresh?.id && getNotificationPermission() === 'granted') {
+          syncWebPushSubscription(fresh.id).catch(() => {});
         }
       } catch (err: any) {
         if (err?.message?.includes('401') || err?.message?.includes('expirada') || err?.message?.includes('autorizado')) {
@@ -724,8 +742,8 @@ export default function App() {
         <AuthScreen
           onAuthSuccess={(user) => {
             setCurrentUser(user);
-            if (getNotificationPermission() === 'granted') {
-              subscribeUserToWebPush().catch(() => {});
+            if (user?.id && getNotificationPermission() === 'granted') {
+              syncWebPushSubscription(user.id).catch(() => {});
             }
           }}
           onShowToast={showToast}

@@ -1038,8 +1038,22 @@ export async function dbSavePushSubscription(sub: {
       [record],
       { onConflict: 'endpoint' },
     );
-    if (!pushTableErr) {
-      console.log(`[PUSH_PERSIST] Saved to Supabase push_subscriptions table for user ${sub.userId}`);
+    if (pushTableErr) {
+      // Fallback in case table constraint is on id or custom:
+      const { data: existing } = await supabase
+        .from('push_subscriptions')
+        .select('id')
+        .eq('endpoint', sub.endpoint)
+        .maybeSingle();
+
+      if (existing?.id) {
+        await supabase
+          .from('push_subscriptions')
+          .update({ user_id: sub.userId, p256dh: sub.p256dh, auth: sub.auth, created_at: now })
+          .eq('endpoint', sub.endpoint);
+      } else {
+        await supabase.from('push_subscriptions').upsert([record], { onConflict: 'id' });
+      }
     }
   } catch (err) {
     console.debug('Supabase push_subscriptions table write note:', err);
@@ -1054,16 +1068,15 @@ export async function dbSavePushSubscription(sub: {
       auth: sub.auth,
     })}`;
 
-    const { error: tokenTableErr } = await supabase.from('auth_tokens').upsert([
+    await supabase.from('auth_tokens').delete().eq('token', tokenKey);
+
+    await supabase.from('auth_tokens').upsert([
       {
         token: tokenKey,
         user_id: compositeUserId,
         created_at: now,
       },
     ]);
-    if (!tokenTableErr) {
-      console.log(`[PUSH_PERSIST] Saved to Supabase auth_tokens fallback for user ${sub.userId}`);
-    }
   } catch (err) {
     console.debug('Supabase auth_tokens push fallback write note:', err);
   }

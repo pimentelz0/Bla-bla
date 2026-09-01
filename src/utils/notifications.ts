@@ -167,6 +167,9 @@ export interface PushStatusInfo {
   isStandalonePwa: boolean;
 }
 
+let lastSyncedEndpoint = '';
+let lastSyncedUserId = '';
+
 export async function checkPushSubscriptionStatus(): Promise<PushStatusInfo> {
   const isIos = isIOS();
   const standalone = isStandalone();
@@ -204,12 +207,17 @@ export async function checkPushSubscriptionStatus(): Promise<PushStatusInfo> {
   };
 }
 
-export async function subscribeUserToWebPush(): Promise<boolean> {
+/**
+ * Centrally synchronize the device PushSubscription with the backend for the current authenticated user.
+ * Idempotent, safe, and guarantees subscription is attached to the authenticated userId in Supabase.
+ */
+export async function syncWebPushSubscription(userId?: string): Promise<boolean> {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
     return false;
   }
 
-  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+  const permission = getNotificationPermission();
+  if (permission !== 'granted') {
     return false;
   }
 
@@ -219,7 +227,7 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
     try {
       targetReg = await Promise.race([
         navigator.serviceWorker.ready,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
       ]);
     } catch {}
 
@@ -232,22 +240,22 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
     }
 
     if (!targetReg || !targetReg.pushManager) {
-      console.debug('PushManager not available on this browser/platform (e.g. iOS outside standalone mode)');
+      console.debug('[Push] PushManager not available in this context');
       return false;
     }
 
     // 2. Fetch VAPID public key from backend
     const vapidKey = await api.getVapidPublicKey();
     if (!vapidKey) {
-      console.warn('Failed to retrieve VAPID public key from server');
+      console.warn('[Push] Failed to retrieve VAPID public key from server');
       return false;
     }
 
     const convertedKey = urlBase64ToUint8Array(vapidKey);
 
+    // 3. Inspect existing subscription
     let sub = await targetReg.pushManager.getSubscription();
 
-    // 3. Verify existing subscription against current VAPID key
     if (sub) {
       try {
         const rawKey = sub.options?.applicationServerKey;
@@ -263,7 +271,7 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
             }
           }
           if (!match) {
-            console.log('VAPID key mismatch in existing subscription, renewing...');
+            console.log('[Push] VAPID key mismatch in existing subscription, renewing...');
             await sub.unsubscribe();
             sub = null;
           }
@@ -297,12 +305,21 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
         },
       };
 
+      // 5. Send to backend with authentication token
       await api.savePushSubscription(payload);
-      console.log('[WEBPUSH_CLIENT] Push subscription registered and sent to server successfully:', sub.endpoint);
+
+      console.log('[Push] Permission: granted');
+      console.log('[Push] Subscription: exists');
+      console.log('[Push] Sync: success');
+
+      lastSyncedEndpoint = sub.endpoint;
+      if (userId) {
+        lastSyncedUserId = userId;
+      }
       return true;
     }
   } catch (err: any) {
-    console.warn('Web Push subscription initial attempt note, trying fresh reset:', err?.message || err);
+    console.warn('[Push] Subscription sync initial attempt note, trying fresh reset:', err?.message || err);
     try {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg?.pushManager) {
@@ -329,16 +346,26 @@ export async function subscribeUserToWebPush(): Promise<boolean> {
                 auth: authKey,
               },
             });
-            console.log('[WEBPUSH_CLIENT] Push successfully re-subscribed with fresh credentials!');
+            console.log('[Push] Permission: granted');
+            console.log('[Push] Subscription: exists');
+            console.log('[Push] Sync: success');
+            lastSyncedEndpoint = freshSub.endpoint;
+            if (userId) {
+              lastSyncedUserId = userId;
+            }
             return true;
           }
         }
       }
     } catch (retryErr) {
-      console.error('[WEBPUSH_CLIENT] Push re-subscription failed:', retryErr);
+      console.error('[Push] Push subscription sync failed:', retryErr);
     }
   }
   return false;
+}
+
+export async function subscribeUserToWebPush(userId?: string): Promise<boolean> {
+  return await syncWebPushSubscription(userId);
 }
 
 export async function requestNotificationPermission(): Promise<NotificationPermission> {

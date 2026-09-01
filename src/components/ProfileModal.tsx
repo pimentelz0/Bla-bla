@@ -323,12 +323,18 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   </div>
                   <span
                     className={`text-[10px] px-2 py-0.5 font-bold rounded-full uppercase tracking-wider ${
-                      getNotificationPermission() === 'granted'
+                      getNotificationPermission() === 'granted' && pushInfo?.subscribedToServer
                         ? 'bg-emerald-100 text-emerald-700'
+                        : getNotificationPermission() === 'granted'
+                        ? 'bg-blue-100 text-blue-700'
                         : 'bg-amber-100 text-amber-800'
                     }`}
                   >
-                    {getNotificationPermission() === 'granted' ? 'Permitido' : 'Pendente'}
+                    {getNotificationPermission() === 'granted' && pushInfo?.subscribedToServer
+                      ? 'Notificações ativas'
+                      : getNotificationPermission() === 'granted'
+                      ? 'Conectando...'
+                      : 'Pendente'}
                   </span>
                 </div>
 
@@ -343,7 +349,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   <div className="flex items-center justify-between">
                     <span>Serviço Push (App Fechado):</span>
                     <span className="font-semibold text-emerald-700 flex items-center gap-1">
-                      {pushInfo?.subscribedToServer ? '🚀 Conectado ao Servidor' : '⚠️ Sincronizando...'}
+                      {getNotificationPermission() === 'granted' && pushInfo?.subscribedToServer
+                        ? '🚀 Conectado e Sincronizado'
+                        : getNotificationPermission() === 'granted'
+                        ? '⚠️ Sincronizando com Servidor...'
+                        : '⏳ Aguardando permissão'}
                     </span>
                   </div>
                 </div>
@@ -359,10 +369,10 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       try {
                         const perm = await requestNotificationPermission();
                         if (perm === 'granted') {
-                          const subscribed = await subscribeUserToWebPush();
+                          const subscribed = await subscribeUserToWebPush(activeUser.id);
                           await refreshPushStatus();
                           if (subscribed) {
-                            setSuccessMsg('✅ Inscrição Push sincronizada com sucesso no servidor!');
+                            setSuccessMsg('✅ Notificações ativas e sincronizadas com sucesso no servidor!');
                             playNotificationSound();
                             sendBrowserNotification('Blá Blá', {
                               body: '🎉 Seu aparelho está pronto para receber notificações mesmo com o app fechado!',
@@ -438,7 +448,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       setSuccessMsg('⏳ Bloqueie a tela ou feche o app agora! Notificação na barra em 5s...');
 
                       // 1. Ensure user is subscribed to server Web Push
-                      await subscribeUserToWebPush().catch(() => {});
+                      await subscribeUserToWebPush(activeUser.id).catch(() => {});
                       await refreshPushStatus();
 
                       // 2. Dispatch real server push after 5 seconds from the backend

@@ -758,16 +758,16 @@ export function createExpressApp(
     }
 
     try {
-      console.log(`[PUSH_SUBSCRIBE] Registering push endpoint for user ${currentUserId}`);
       await dbSavePushSubscription({
         userId: currentUserId,
         endpoint: subscription.endpoint,
         p256dh: subscription.keys.p256dh,
         auth: subscription.keys.auth,
       });
-      return res.json({ success: true });
+      console.log(`[Push Subscribe]\nuserId: ${currentUserId}\nsubscription endpoint: presente\nresult: created/updated`);
+      return res.json({ success: true, result: 'created/updated' });
     } catch (err: any) {
-      console.error('Error saving push subscription:', err);
+      console.error(`[Push Subscribe]\nuserId: ${currentUserId}\nsubscription endpoint: presente\nresult: error`, err);
       return res.status(500).json({ error: 'Erro ao registrar notificações Push.' });
     }
   });
