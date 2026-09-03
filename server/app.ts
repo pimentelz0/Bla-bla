@@ -42,6 +42,7 @@ import {
   dbIsManualUnread,
   dbSavePushSubscription,
   dbDeletePushSubscription,
+  dbGetPushSubscriptionsByUser,
   dbMarkMessagesAsDelivered,
   dbMarkConversationDelivered,
 } from './supabase';
@@ -430,6 +431,8 @@ export function createExpressApp(
         const isArchived = await dbIsArchived(currentUserId, c.id);
         const isBlocked = await dbIsBlocked(currentUserId, otherUserId);
         const isManualUnread = await dbIsManualUnread(currentUserId, c.id);
+        const otherUserSubs = await dbGetPushSubscriptionsByUser(otherUserId);
+        const hasPushEnabled = otherUserSubs.length > 0;
 
         // Sanitize legacy last_message if it contains raw Base64 media data
         let cleanLastMessage = c.last_message || '';
@@ -456,7 +459,10 @@ export function createExpressApp(
 
         return {
           id: c.id,
-          other_user: sanitizeUser(otherUser, onlineSet),
+          other_user: {
+            ...sanitizeUser(otherUser, onlineSet),
+            has_push_enabled: hasPushEnabled,
+          },
           last_message: cleanLastMessage,
           last_message_at: c.last_message_at || c.updated_at || c.created_at,
           last_sender_id: c.last_sender_id,

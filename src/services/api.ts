@@ -248,8 +248,8 @@ export const api = {
     });
   },
 
-  async triggerServerTestPush(delayMs: number = 3000): Promise<void> {
-    await fetchWithAuth('/api/push/test', {
+  async triggerServerTestPush(delayMs: number = 3000): Promise<{ success: boolean; message: string; sentCount?: number; errors?: number }> {
+    return await fetchWithAuth<{ success: boolean; message: string; sentCount?: number; errors?: number }>('/api/push/test', {
       method: 'POST',
       body: JSON.stringify({ delayMs }),
     });

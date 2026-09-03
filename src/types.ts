@@ -7,6 +7,7 @@ export interface User {
   last_seen: string;
   is_online?: boolean;
   is_blocked?: boolean;
+  has_push_enabled?: boolean;
 }
 
 export type MessageType = 'text' | 'image' | 'audio' | 'sticker';

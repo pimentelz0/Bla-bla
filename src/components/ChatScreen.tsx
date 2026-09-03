@@ -59,6 +59,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   const [showPicker, setShowPicker] = useState(false);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<{ url: string; caption?: string } | null>(null);
+  const [dismissPushNotice, setDismissPushNotice] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -244,6 +245,25 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
               Desbloquear
             </button>
           )}
+        </div>
+      )}
+
+      {/* Push Notification Status Notice for Recipient */}
+      {!isBlocked && otherUser.has_push_enabled === false && !dismissPushNotice && (
+        <div className="px-3.5 py-2 bg-amber-50/90 border-b border-amber-200/70 flex items-center justify-between text-[11.5px] text-amber-900 animate-fadeIn">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="shrink-0 text-xs">💡</span>
+            <span className="truncate">
+              <strong>@{otherUser.username}</strong> ainda não ativou notificações no aparelho. Ele só verá suas mensagens ao abrir o app.
+            </span>
+          </div>
+          <button
+            onClick={() => setDismissPushNotice(true)}
+            className="p-1 text-amber-700 hover:text-amber-950 text-xs ml-1 shrink-0 font-bold"
+            title="Fechar aviso"
+          >
+            ✕
+          </button>
         </div>
       )}
 

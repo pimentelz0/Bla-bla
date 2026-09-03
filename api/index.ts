@@ -1619,10 +1619,15 @@ export default async function handler(req: any, res: any) {
           const isArchived = await dbIsArchived(user.id, c.id);
           const isBlocked = await dbIsBlocked(user.id, otherUserId);
           const isManualUnread = await dbIsManualUnread(user.id, c.id);
+          const otherUserSubs = await dbGetPushSubscriptionsByUser(otherUserId);
+          const hasPushEnabled = otherUserSubs.length > 0;
 
           return {
             id: c.id,
-            other_user: sanitizeUser(otherUser),
+            other_user: {
+              ...sanitizeUser(otherUser),
+              has_push_enabled: hasPushEnabled,
+            },
             last_message: c.last_message || '',
             last_message_at: c.last_message_at || c.updated_at || c.created_at,
             last_sender_id: c.last_sender_id,

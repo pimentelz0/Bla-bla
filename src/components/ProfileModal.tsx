@@ -445,14 +445,18 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     onClick={async () => {
                       setErrorMsg(null);
                       setScheduledCountdown(5);
-                      setSuccessMsg('⏳ Bloqueie a tela ou feche o app agora! Notificação na barra em 5s...');
+                      setSuccessMsg('⏳ Bloqueie a tela ou saia do app agora! Disparando em 5s...');
 
-                      // 1. Ensure user is subscribed to server Web Push
-                      await subscribeUserToWebPush(activeUser.id).catch(() => {});
-                      await refreshPushStatus();
+                      try {
+                        // 1. Ensure user is subscribed to server Web Push
+                        await subscribeUserToWebPush(activeUser.id);
+                        await refreshPushStatus();
 
-                      // 2. Dispatch real server push after 5 seconds from the backend
-                      api.triggerServerTestPush(5000).catch(() => {});
+                        // 2. Dispatch real server push after 5 seconds from the backend
+                        await api.triggerServerTestPush(5000);
+                      } catch (err: any) {
+                        console.warn('Erro ao agendar push no servidor:', err);
+                      }
 
                       // 3. Also schedule in Service Worker locally as dual guarantee
                       await scheduleBackgroundNotification(

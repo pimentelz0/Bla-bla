@@ -100,7 +100,14 @@ self.addEventListener('push', (event) => {
     data,
   };
 
-  const showPromise = self.registration.showNotification(title, options);
+  const showPromise = self.registration.showNotification(title, options).catch((err) => {
+    console.error('ServiceWorker showNotification primary failed, retrying with fallback:', err);
+    return self.registration.showNotification(title, {
+      body,
+      tag,
+      icon: '/icon-192.png',
+    });
+  });
 
   if (data?.messageId) {
     const ackPromise = fetch('/api/messages/delivered', {

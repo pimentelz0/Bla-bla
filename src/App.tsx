@@ -24,7 +24,7 @@ import {
   updateAppBadgeAndTitle,
 } from './utils/notifications';
 import { parseMessageContent } from './utils/mediaHelper';
-import { Search, Plus, MessageSquare, Users, Archive, ArrowLeft, Bell } from 'lucide-react';
+import { Search, Plus, MessageSquare, Users, Archive, ArrowLeft, Bell, BellOff } from 'lucide-react';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(getStoredUser());
@@ -841,11 +841,26 @@ export default function App() {
                   </button>
                   <button
                     onClick={() => setShowNotificationPrompt(false)}
-                    className="p-1 text-gray-400 hover:text-gray-600 rounded-lg text-xs"
+                    className="p-1 text-gray-400 hover:text-gray-600 rounded-lg text-xs cursor-pointer"
                     title="Agora não"
                   >
                     ✕
                   </button>
+                </div>
+              </div>
+            )}
+
+            {/* Notification Permission Denied Helper */}
+            {notificationPermission === 'denied' && (
+              <div className="mx-3 my-2.5 p-3 bg-rose-50 border border-rose-200/80 rounded-2xl flex items-center gap-2.5 shadow-2xs animate-fadeIn">
+                <div className="w-8 h-8 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                  <BellOff className="w-4 h-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-rose-900 leading-tight">Notificações Bloqueadas</p>
+                  <p className="text-[11px] text-rose-700 leading-tight mt-0.5">
+                    Seu navegador bloqueou as notificações. Toque no ícone de cadeado 🔒 na barra de endereço para permitir.
+                  </p>
                 </div>
               </div>
             )}
