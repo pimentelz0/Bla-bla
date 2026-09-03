@@ -351,13 +351,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 {/* Live Diagnostic details */}
                 <div className="bg-white/90 rounded-xl p-2.5 border border-emerald-100 text-[11px] space-y-1.5 text-gray-600">
                   <div className="flex items-center justify-between">
-                    <span>Permissão do Navegador:</span>
+                    <span>Permissão de Notificação:</span>
                     <span className="font-semibold text-gray-800">
                       {getNotificationPermission() === 'granted' ? '✅ Concedida' : getNotificationPermission() === 'denied' ? '❌ Bloqueada' : '⏳ Não solicitada'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span>Aparelhos Registrados no Servidor:</span>
+                    <span>Aparelhos Conectados ao Servidor:</span>
                     <span className={`font-semibold ${pushInfo?.serverDeviceCount && pushInfo.serverDeviceCount > 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
                       {pushInfo?.serverDeviceCount !== undefined
                         ? pushInfo.serverDeviceCount > 0
@@ -367,15 +367,21 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span>Firebase Cloud Messaging (FCM):</span>
-                    <span className={`font-semibold ${fcmCount && fcmCount > 0 ? 'text-emerald-700' : 'text-blue-700'}`}>
-                      {fcmCount !== null
-                        ? fcmCount > 0
-                          ? `🔥 ${fcmCount} token(s) no Firestore`
-                          : '⚠️ Token pendente'
-                        : 'Verificando...'}
+                    <span>Recepção com App Fechado:</span>
+                    <span className={`font-semibold ${pushInfo?.serverDeviceCount && pushInfo.serverDeviceCount > 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                      {pushInfo?.serverDeviceCount && pushInfo.serverDeviceCount > 0
+                        ? '✅ Pronta no Servidor'
+                        : '⚠️ Requer ativação'}
                     </span>
                   </div>
+                  {isIOS() && (
+                    <div className="flex items-center justify-between pt-0.5 border-t border-gray-100">
+                      <span>Modo App iOS (Tela de Início):</span>
+                      <span className={`font-semibold ${isStandalone() ? 'text-emerald-700' : 'text-amber-700'}`}>
+                        {isStandalone() ? '✅ Instalado (Recebe fechado)' : '⚠️ Necessário no iPhone'}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Blocked permission help box */}

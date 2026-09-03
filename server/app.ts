@@ -67,6 +67,7 @@ export function isUserOnline(lastSeenIso?: string, onlineSet?: Set<string>, user
 export function sanitizeUser(
   u: { id: string; username: string; profile_photo: string; created_at: string; updated_at: string; last_seen: string },
   onlineSet?: Set<string>,
+  hasPushEnabled?: boolean,
 ) {
   return {
     id: u.id,
@@ -76,6 +77,7 @@ export function sanitizeUser(
     updated_at: u.updated_at,
     last_seen: u.last_seen,
     is_online: isUserOnline(u.last_seen, onlineSet, u.id),
+    has_push_enabled: hasPushEnabled,
   };
 }
 
@@ -644,6 +646,9 @@ export function createExpressApp(
       salt: '',
     };
 
+    const otherUserSubs = await dbGetPushSubscriptionsByUser(otherUserId);
+    const sanitizedOtherUser = sanitizeUser(otherUser, getOnlineUserIds(), otherUserSubs.length > 0);
+
     if (!since) {
       broadcastToUser(otherUserId, {
         type: 'message:read',
@@ -653,7 +658,7 @@ export function createExpressApp(
 
     return res.json({
       conversation_id: convId,
-      other_user: sanitizeUser(otherUser, getOnlineUserIds()),
+      other_user: sanitizedOtherUser,
       messages: convMessages,
     });
   });
@@ -779,11 +784,19 @@ export function createExpressApp(
       else if (parsed.type === 'sticker') pushPreview = '🎭 Figurinha';
     } catch {}
 
+    if (pushPreview.length > 120) {
+      pushPreview = pushPreview.substring(0, 117) + '...';
+    }
+
     const senderName = senderUser?.username ? `@${senderUser.username}` : 'Blá Blá';
+    const safeIcon = senderUser?.profile_photo && !senderUser.profile_photo.startsWith('data:') && senderUser.profile_photo.length < 250
+      ? senderUser.profile_photo
+      : '/icon-192.png';
+
     const pushPayload = {
       title: senderName,
       body: pushPreview,
-      icon: senderUser?.profile_photo || '/icon-192.png',
+      icon: safeIcon,
       badge: '/icon-192.png',
       tag: `chat_${convId}`,
       data: {

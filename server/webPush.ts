@@ -74,13 +74,44 @@ export async function sendWebPushToUser(
   try {
     const subscriptions = await dbGetPushSubscriptionsByUser(userId);
     if (!subscriptions || subscriptions.length === 0) {
+      console.log(`[WebPush] User ${userId} has no registered push subscriptions.`);
       return { sentCount: 0, errors: 0 };
     }
+
+    // Strictly sanitize icon: Data URIs (Base64) exceed the 4KB WebPush RFC limit and are rejected by APNs
+    let safeIcon = payload.icon;
+    if (!safeIcon || safeIcon.startsWith('data:') || safeIcon.length > 250) {
+      safeIcon = '/icon-192.png';
+    }
+
+    // Build lightweight, compliant push payload (<3.5KB)
+    const safePayload: PushPayload = {
+      title: (payload.title || 'Blá Blá').slice(0, 60),
+      body: (payload.body || 'Nova mensagem recebida').slice(0, 150),
+      icon: safeIcon,
+      badge: '/icon-192.png',
+      tag: payload.tag ? payload.tag.slice(0, 32) : 'blabla_msg',
+      data: {
+        conversationId: payload.data?.conversationId || '',
+        messageId: payload.data?.messageId || '',
+        senderId: payload.data?.senderId || '',
+        timestamp: payload.data?.timestamp || Date.now(),
+      },
+    };
+
+    const payloadString = JSON.stringify(safePayload);
 
     let sentCount = 0;
     let errors = 0;
 
-    const payloadString = JSON.stringify(payload);
+    // APNs (Apple) coalescing topic: alphanumeric, max 32 chars
+    const apnsTopic = safePayload.tag ? safePayload.tag.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) : undefined;
+
+    const requestOptions: webpush.RequestOptions = {
+      TTL: 60 * 60 * 24, // 24 hours
+      urgency: 'high',
+      topic: apnsTopic,
+    };
 
     await Promise.all(
       subscriptions.map(async (sub) => {
@@ -93,19 +124,17 @@ export async function sendWebPushToUser(
             },
           };
 
-          await webpush.sendNotification(pushSubscription, payloadString, {
-            TTL: 60 * 60 * 24, // 24 hours
-            urgency: 'high',
-          });
+          await webpush.sendNotification(pushSubscription, payloadString, requestOptions);
 
           sentCount++;
+          console.log(`[WebPush] Successfully delivered push to endpoint (${sub.endpoint.slice(0, 45)}...)`);
         } catch (err: any) {
           errors++;
-          // If subscription is invalid or expired, delete it
-          if (err.statusCode === 404 || err.statusCode === 410) {
+          const statusCode = err.statusCode || err.status;
+          console.warn(`[WebPush Error] Status: ${statusCode} - Endpoint: ${sub.endpoint.slice(0, 45)}...`, err.message || err);
+          // If subscription is invalid or expired (404 Not Found or 410 Gone), remove it
+          if (statusCode === 404 || statusCode === 410) {
             await dbDeletePushSubscription(sub.endpoint);
-          } else {
-            console.debug(`WebPush error for user ${userId}:`, err.message || err);
           }
         }
       }),
