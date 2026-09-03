@@ -12,12 +12,14 @@ import {
   requestNotificationPermission,
   getNotificationPermission,
   subscribeUserToWebPush,
+  subscribeUserToWebPushDetailed,
   checkPushSubscriptionStatus,
   PushStatusInfo,
   isInIframe,
   isIOS,
   isStandalone,
 } from '../utils/notifications';
+import { registerFcmTokenForUser, getUserFcmTokenCount } from '../lib/firebase';
 
 interface ProfileModalProps {
   isOpen: boolean;
@@ -49,6 +51,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [scheduledCountdown, setScheduledCountdown] = useState<number | null>(null);
   const [pushInfo, setPushInfo] = useState<PushStatusInfo | null>(null);
+  const [fcmCount, setFcmCount] = useState<number | null>(null);
   const [isSyncingPush, setIsSyncingPush] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -58,6 +61,13 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
       const info = await checkPushSubscriptionStatus();
       setPushInfo(info);
     } catch {}
+
+    if (activeUser?.id) {
+      try {
+        const count = await getUserFcmTokenCount(activeUser.id);
+        setFcmCount(count);
+      } catch {}
+    }
   };
 
   // Sync state whenever activeUser or isOpen changes
@@ -339,7 +349,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                 </div>
 
                 {/* Live Diagnostic details */}
-                <div className="bg-white/80 rounded-xl p-2.5 border border-emerald-100 text-[11px] space-y-1 text-gray-600">
+                <div className="bg-white/90 rounded-xl p-2.5 border border-emerald-100 text-[11px] space-y-1.5 text-gray-600">
                   <div className="flex items-center justify-between">
                     <span>Permissão do Navegador:</span>
                     <span className="font-semibold text-gray-800">
@@ -347,19 +357,48 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     </span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span>Serviço Push (App Fechado):</span>
-                    <span className="font-semibold text-emerald-700 flex items-center gap-1">
-                      {getNotificationPermission() === 'granted' && pushInfo?.subscribedToServer
-                        ? '🚀 Conectado e Sincronizado'
-                        : getNotificationPermission() === 'granted'
-                        ? '⚠️ Sincronizando com Servidor...'
-                        : '⏳ Aguardando permissão'}
+                    <span>Aparelhos Registrados no Servidor:</span>
+                    <span className={`font-semibold ${pushInfo?.serverDeviceCount && pushInfo.serverDeviceCount > 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                      {pushInfo?.serverDeviceCount !== undefined
+                        ? pushInfo.serverDeviceCount > 0
+                          ? `🚀 ${pushInfo.serverDeviceCount} aparelho(s) ativo(s)`
+                          : '⚠️ Nenhum aparelho conectado'
+                        : 'Verificando...'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span>Firebase Cloud Messaging (FCM):</span>
+                    <span className={`font-semibold ${fcmCount && fcmCount > 0 ? 'text-emerald-700' : 'text-blue-700'}`}>
+                      {fcmCount !== null
+                        ? fcmCount > 0
+                          ? `🔥 ${fcmCount} token(s) no Firestore`
+                          : '⚠️ Token pendente'
+                        : 'Verificando...'}
                     </span>
                   </div>
                 </div>
 
+                {/* Blocked permission help box */}
+                {getNotificationPermission() === 'denied' && (
+                  <div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-[11px] text-red-800 space-y-1">
+                    <p className="font-bold flex items-center gap-1">
+                      <span>🚫</span> Notificações Bloqueadas no Navegador
+                    </p>
+                    <p className="leading-relaxed">
+                      Para desbloquear: toque no ícone de <strong>cadeado 🔒</strong> ou <strong>ajustes</strong> ao lado do endereço do site (barra de navegação) e mude Notificações para <strong>"Permitir"</strong>. Em seguida recarregue a página.
+                    </p>
+                  </div>
+                )}
+
+                {/* Permission granted but not synced hint */}
+                {getNotificationPermission() === 'granted' && pushInfo?.serverDeviceCount === 0 && (
+                  <div className="p-2 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-800 leading-relaxed">
+                    ⚠️ Seu aparelho ainda não foi salvo no servidor. Toque no botão verde abaixo para ativar.
+                  </div>
+                )}
+
                 <div className="flex flex-col gap-2 pt-0.5">
-                  {/* Activate / Resubscribe Web Push */}
+                  {/* Activate / Resubscribe Web Push & FCM */}
                   <button
                     type="button"
                     disabled={isSyncingPush}
@@ -369,10 +408,11 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       try {
                         const perm = await requestNotificationPermission();
                         if (perm === 'granted') {
-                          const subscribed = await subscribeUserToWebPush(activeUser.id);
+                          const res = await subscribeUserToWebPushDetailed(activeUser.id);
+                          const fcmRes = await registerFcmTokenForUser(activeUser.id);
                           await refreshPushStatus();
-                          if (subscribed) {
-                            setSuccessMsg('✅ Notificações ativas e sincronizadas com sucesso no servidor!');
+                          if (res.success || fcmRes.success) {
+                            setSuccessMsg('✅ Aparelho conectado! Notificações FCM com o app fechado ativas.');
                             playNotificationSound();
                             sendBrowserNotification('Blá Blá', {
                               body: '🎉 Seu aparelho está pronto para receber notificações mesmo com o app fechado!',
@@ -380,21 +420,18 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                               tag: 'push_ready',
                             });
                           } else {
-                            setSuccessMsg('Permissão concedida. Tentando conectar com o serviço de push...');
+                            setErrorMsg(res.error || fcmRes.error || 'Não foi possível sincronizar o aparelho com o servidor.');
                           }
-                          setTimeout(() => setSuccessMsg(null), 4000);
+                          setTimeout(() => setSuccessMsg(null), 5000);
                         } else if (isIOS() && !isStandalone()) {
-                          setSuccessMsg(
+                          setErrorMsg(
                             '📱 No iPhone: Toque no botão Compartilhar 📤 no Safari e escolha "Adicionar à Tela de Início" para ativar notificações na tela bloqueada.'
                           );
-                          setTimeout(() => setSuccessMsg(null), 6000);
                         } else {
-                          setErrorMsg('Permissão de notificação não foi concedida no navegador.');
-                          setTimeout(() => setErrorMsg(null), 4000);
+                          setErrorMsg('Permissão de notificação negada no navegador. Desbloqueie no ícone de cadeado 🔒 ao lado da URL.');
                         }
-                      } catch {
-                        setErrorMsg('Não foi possível solicitar permissão neste navegador.');
-                        setTimeout(() => setErrorMsg(null), 4000);
+                      } catch (err: any) {
+                        setErrorMsg('Erro: ' + (err?.message || 'Não foi possível solicitar permissão neste navegador.'));
                       } finally {
                         setIsSyncingPush(false);
                       }
@@ -406,7 +443,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     ) : (
                       <Smartphone className="w-3.5 h-3.5" />
                     )}
-                    <span>{getNotificationPermission() === 'granted' ? 'Re-sincronizar Notificações com App Fechado' : 'Ativar Notificações no Celular'}</span>
+                    <span>{pushInfo?.serverDeviceCount && pushInfo.serverDeviceCount > 0 ? 'Re-sincronizar Este Aparelho (FCM + WebPush)' : 'Ativar Notificações no Celular (FCM)'}</span>
                   </button>
 
                   {/* Immediate Status Bar Notification Test */}
@@ -447,19 +484,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       setScheduledCountdown(5);
                       setSuccessMsg('⏳ Bloqueie a tela ou saia do app agora! Disparando em 5s...');
 
-                      try {
-                        // 1. Ensure user is subscribed to server Web Push
-                        await subscribeUserToWebPush(activeUser.id);
-                        await refreshPushStatus();
-
-                        // 2. Dispatch real server push after 5 seconds from the backend
-                        await api.triggerServerTestPush(5000);
-                      } catch (err: any) {
-                        console.warn('Erro ao agendar push no servidor:', err);
-                      }
-
-                      // 3. Also schedule in Service Worker locally as dual guarantee
-                      await scheduleBackgroundNotification(
+                      // Local schedule backup
+                      scheduleBackgroundNotification(
                         '@carlos_souza',
                         {
                           body: 'E aí! Você viu a mensagem que te mandei antes? 👀',
@@ -467,7 +493,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                           tag: 'background_test_notif',
                         },
                         5000,
-                      );
+                      ).catch(() => {});
 
                       let current = 5;
                       const interval = setInterval(() => {
@@ -475,12 +501,28 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                         if (current <= 0) {
                           clearInterval(interval);
                           setScheduledCountdown(null);
-                          setSuccessMsg('Notificação WhatsApp enviada para a tela de bloqueio!');
-                          setTimeout(() => setSuccessMsg(null), 4000);
                         } else {
                           setScheduledCountdown(current);
                         }
                       }, 1000);
+
+                      try {
+                        // Ensure subscription exists
+                        await subscribeUserToWebPushDetailed(activeUser.id);
+                        await refreshPushStatus();
+
+                        // Dispatch real server push after 5 seconds
+                        const result = await api.triggerServerTestPush(5000);
+                        if (result.sentCount && result.sentCount > 0) {
+                          setSuccessMsg(`✅ Notificação disparada com sucesso pelo servidor para ${result.sentCount} aparelho(s)!`);
+                        } else {
+                          setErrorMsg('⚠️ O servidor disparou o teste, mas não encontrou aparelhos registrados para seu usuário. Toque em "Ativar Notificações no Celular" acima.');
+                        }
+                        await refreshPushStatus();
+                      } catch (err: any) {
+                        console.warn('Erro ao disparar push no servidor:', err);
+                        setErrorMsg('Erro ao disparar teste no servidor: ' + (err?.message || err));
+                      }
                     }}
                     className="w-full py-2 px-3 bg-emerald-100/70 hover:bg-emerald-100 text-emerald-900 border border-emerald-300/80 rounded-xl text-xs font-semibold transition-all cursor-pointer text-center shadow-2xs flex items-center justify-center gap-1.5"
                   >

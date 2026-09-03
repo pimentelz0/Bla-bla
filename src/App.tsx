@@ -23,6 +23,7 @@ import {
   initAudioUnlock,
   updateAppBadgeAndTitle,
 } from './utils/notifications';
+import { registerFcmTokenForUser } from './lib/firebase';
 import { parseMessageContent } from './utils/mediaHelper';
 import { Search, Plus, MessageSquare, Users, Archive, ArrowLeft, Bell, BellOff } from 'lucide-react';
 
@@ -78,8 +79,12 @@ export default function App() {
     // Listen for messages from Service Worker (e.g. user clicked notification)
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
       const handleServiceWorkerMessage = (event: MessageEvent) => {
-        if (event.data?.type === 'OPEN_CONVERSATION' && event.data?.conversationId) {
-          setActiveConversationId(event.data.conversationId);
+        if (
+          (event.data?.type === 'OPEN_CONVERSATION' && event.data?.conversationId) ||
+          (event.data?.type === 'OPEN_CHAT' && event.data?.chatId)
+        ) {
+          const targetId = event.data.conversationId || event.data.chatId;
+          setActiveConversationId(targetId);
         }
       };
 
@@ -109,10 +114,11 @@ export default function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Automatically ensure push notifications subscription is active whenever currentUser is logged in
+  // Automatically ensure push notifications & FCM subscription are active whenever currentUser is logged in
   useEffect(() => {
     if (currentUser?.id && getNotificationPermission() === 'granted') {
       syncWebPushSubscription(currentUser.id).catch(() => {});
+      registerFcmTokenForUser(currentUser.id).catch(() => {});
     }
   }, [currentUser?.id]);
 
@@ -121,6 +127,7 @@ export default function App() {
     const handleFocusSync = () => {
       if (document.visibilityState === 'visible' && currentUser?.id && getNotificationPermission() === 'granted') {
         syncWebPushSubscription(currentUser.id).catch(() => {});
+        registerFcmTokenForUser(currentUser.id).catch(() => {});
       }
     };
     document.addEventListener('visibilitychange', handleFocusSync);
@@ -138,6 +145,7 @@ export default function App() {
     if (perm === 'granted') {
       if (currentUser?.id) {
         await syncWebPushSubscription(currentUser.id).catch(() => {});
+        await registerFcmTokenForUser(currentUser.id).catch(() => {});
       }
       showToast('Notificações no sistema ativadas!', 'success');
       playNotificationSound();
@@ -157,6 +165,7 @@ export default function App() {
         setCurrentUser(fresh);
         if (fresh?.id && getNotificationPermission() === 'granted') {
           syncWebPushSubscription(fresh.id).catch(() => {});
+          registerFcmTokenForUser(fresh.id).catch(() => {});
         }
       } catch (err: any) {
         if (err?.message?.includes('401') || err?.message?.includes('expirada') || err?.message?.includes('autorizado')) {

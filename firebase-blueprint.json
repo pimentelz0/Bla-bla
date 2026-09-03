@@ -1,0 +1,40 @@
+{
+  "entities": {
+    "FcmToken": {
+      "title": "FcmToken",
+      "description": "FCM device push notification tokens linked to users",
+      "type": "object",
+      "properties": {
+        "token": { "type": "string" },
+        "userId": { "type": "string" },
+        "platform": { "type": "string" },
+        "deviceInfo": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["token", "userId"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Chat messages sent between users",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "content": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["senderId", "recipientId", "content"]
+    }
+  },
+  "firestore": {
+    "/fcm_tokens/{tokenId}": {
+      "schema": "FcmToken",
+      "description": "Collection of FCM device tokens for multi-device push delivery"
+    },
+    "/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Collection of chat messages that trigger push notifications"
+    }
+  }
+}

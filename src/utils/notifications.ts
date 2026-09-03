@@ -165,6 +165,7 @@ export interface PushStatusInfo {
   endpoint?: string;
   isIosBrowser: boolean;
   isStandalonePwa: boolean;
+  serverDeviceCount: number;
 }
 
 let lastSyncedEndpoint = '';
@@ -179,6 +180,7 @@ export async function checkPushSubscriptionStatus(): Promise<PushStatusInfo> {
   let swRegistered = false;
   let subscribed = false;
   let endpoint: string | undefined;
+  let serverDeviceCount = 0;
 
   if (supported && 'serviceWorker' in navigator) {
     try {
@@ -196,6 +198,12 @@ export async function checkPushSubscriptionStatus(): Promise<PushStatusInfo> {
     } catch {}
   }
 
+  // Also query server device count if user is logged in
+  try {
+    const status = await api.getPushStatus();
+    serverDeviceCount = status?.count || 0;
+  } catch {}
+
   return {
     supported,
     permission,
@@ -204,21 +212,35 @@ export async function checkPushSubscriptionStatus(): Promise<PushStatusInfo> {
     endpoint,
     isIosBrowser: isIos,
     isStandalonePwa: standalone,
+    serverDeviceCount,
   };
+}
+
+export interface PushSyncDetailResult {
+  success: boolean;
+  error?: string;
+  endpoint?: string;
 }
 
 /**
  * Centrally synchronize the device PushSubscription with the backend for the current authenticated user.
  * Idempotent, safe, and guarantees subscription is attached to the authenticated userId in Supabase.
  */
-export async function syncWebPushSubscription(userId?: string): Promise<boolean> {
+export async function syncWebPushSubscriptionDetailed(userId?: string): Promise<PushSyncDetailResult> {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
-    return false;
+    return { success: false, error: 'Service Worker não é suportado neste navegador ou a conexão não é segura (HTTPS).' };
+  }
+
+  if (isIOS() && !isStandalone()) {
+    return {
+      success: false,
+      error: '📱 No iPhone (iOS): Para receber notificações na tela de bloqueio, toque em Compartilhar (📤) no Safari e depois em "Adicionar à Tela de Início".',
+    };
   }
 
   const permission = getNotificationPermission();
   if (permission !== 'granted') {
-    return false;
+    return { success: false, error: 'Permissão de notificação negada no navegador ou sistema do aparelho.' };
   }
 
   try {
@@ -227,7 +249,7 @@ export async function syncWebPushSubscription(userId?: string): Promise<boolean>
     try {
       targetReg = await Promise.race([
         navigator.serviceWorker.ready,
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
       ]);
     } catch {}
 
@@ -240,8 +262,7 @@ export async function syncWebPushSubscription(userId?: string): Promise<boolean>
     }
 
     if (!targetReg || !targetReg.pushManager) {
-      console.debug('[Push] PushManager not available in this context');
-      return false;
+      return { success: false, error: 'API PushManager não disponível no Service Worker deste navegador.' };
     }
 
     // 2. Fetch VAPID public key from backend
@@ -249,7 +270,7 @@ export async function syncWebPushSubscription(userId?: string): Promise<boolean>
     try {
       vapidKey = await api.getVapidPublicKey();
     } catch (keyErr) {
-      console.warn('[Push] Error or offline fetching VAPID public key, using stable key:', keyErr);
+      console.warn('[Push] Error fetching VAPID public key:', keyErr);
     }
     if (!vapidKey) {
       vapidKey = 'BAJTG-SdB_hO5SUEAG3Ua-fXycKHi3MZVk96MDuHn39kUIzUOQEqy7WBRA9NdGHiEM6XbX358slBOagLXUG3xB0';
@@ -313,18 +334,14 @@ export async function syncWebPushSubscription(userId?: string): Promise<boolean>
       // 5. Send to backend with authentication token
       await api.savePushSubscription(payload);
 
-      console.log('[Push] Permission: granted');
-      console.log('[Push] Subscription: exists');
-      console.log('[Push] Sync: success');
-
       lastSyncedEndpoint = sub.endpoint;
       if (userId) {
         lastSyncedUserId = userId;
       }
-      return true;
+      return { success: true, endpoint: sub.endpoint };
     }
   } catch (err: any) {
-    console.warn('[Push] Subscription sync initial attempt note, trying fresh reset:', err?.message || err);
+    console.warn('[Push] Subscription sync note, trying fresh reset:', err?.message || err);
     try {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg?.pushManager) {
@@ -352,27 +369,36 @@ export async function syncWebPushSubscription(userId?: string): Promise<boolean>
                 auth: authKey,
               },
             });
-            console.log('[Push] Permission: granted');
-            console.log('[Push] Subscription: exists');
-            console.log('[Push] Sync: success');
             lastSyncedEndpoint = freshSub.endpoint;
             if (userId) {
               lastSyncedUserId = userId;
             }
-            return true;
+            return { success: true, endpoint: freshSub.endpoint };
           }
         }
       }
-    } catch (retryErr) {
+    } catch (retryErr: any) {
       console.error('[Push] Push subscription sync failed:', retryErr);
+      return { success: false, error: retryErr?.message || 'Falha ao registrar serviço de push no navegador.' };
     }
+    return { success: false, error: err?.message || 'Falha ao criar inscrição Push.' };
   }
-  return false;
+  return { success: false, error: 'Inscrição Push não pôde ser concluída.' };
+}
+
+export async function syncWebPushSubscription(userId?: string): Promise<boolean> {
+  const res = await syncWebPushSubscriptionDetailed(userId);
+  return res.success;
 }
 
 export async function subscribeUserToWebPush(userId?: string): Promise<boolean> {
   const targetUserId = userId || getStoredUser()?.id;
   return await syncWebPushSubscription(targetUserId);
+}
+
+export async function subscribeUserToWebPushDetailed(userId?: string): Promise<PushSyncDetailResult> {
+  const targetUserId = userId || getStoredUser()?.id;
+  return await syncWebPushSubscriptionDetailed(targetUserId);
 }
 
 export async function requestNotificationPermission(): Promise<NotificationPermission> {

@@ -248,6 +248,10 @@ export const api = {
     });
   },
 
+  async getPushStatus(): Promise<{ hasSubscription: boolean; count: number }> {
+    return await fetchWithAuth<{ hasSubscription: boolean; count: number }>('/api/push/status');
+  },
+
   async triggerServerTestPush(delayMs: number = 3000): Promise<{ success: boolean; message: string; sentCount?: number; errors?: number }> {
     return await fetchWithAuth<{ success: boolean; message: string; sentCount?: number; errors?: number }>('/api/push/test', {
       method: 'POST',

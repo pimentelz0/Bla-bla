@@ -94,9 +94,10 @@ self.addEventListener('push', (event) => {
     body,
     icon,
     badge: '/icon-192.png',
-    vibrate: [200, 100, 200],
+    vibrate: [300, 100, 300, 100, 300],
     tag,
     renotify: true,
+    requireInteraction: true,
     data,
   };
 
@@ -124,3 +125,36 @@ self.addEventListener('push', (event) => {
     event.waitUntil(showPromise);
   }
 });
+
+// Notification click handler: opens the app in the corresponding conversation
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  const data = event.notification.data || {};
+  const chatId = data.chatId || data.conversationId || data.userId || '';
+  const targetUrl = data.url || (chatId ? `/?chat=${encodeURIComponent(chatId)}` : '/');
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // If a window is open, focus it and tell the app to open the chat
+      for (const client of clientList) {
+        if ('focus' in client) {
+          client.focus();
+          if (chatId) {
+            client.postMessage({
+              type: 'OPEN_CHAT',
+              chatId,
+              data,
+            });
+          }
+          return client;
+        }
+      }
+      // Otherwise open a new window
+      if (clients.openWindow) {
+        return clients.openWindow(targetUrl);
+      }
+    })
+  );
+});
+

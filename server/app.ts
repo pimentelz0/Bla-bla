@@ -47,6 +47,7 @@ import {
   dbMarkConversationDelivered,
 } from './supabase';
 import { getVapidPublicKey, sendWebPushToUser } from './webPush';
+import { sendFcmPushToUser, mirrorMessageToFirestore } from './fcm';
 import { INVENTED_EMOJIS } from '../src/utils/customAvatars';
 
 function hashPassword(pin: string, salt: string): string {
@@ -809,7 +810,32 @@ export function createExpressApp(
       console.error(`[Push Message]\nsenderId: ${currentUserId}\nreceiverId: ${otherUserId}\npushDispatch: error`, pushErr);
     }
 
-    // 5. Return message response normally
+    // 4. Mirror message to Firestore (triggers Cloud Function for push delivery)
+    mirrorMessageToFirestore({
+      id: msgId,
+      senderId: currentUserId,
+      senderName: senderUser?.username || 'Blá Blá',
+      recipientId: otherUserId,
+      content: pushPreview,
+      chatId: convId,
+      createdAt: now,
+    }).catch(() => {});
+
+    // 5. Also attempt direct FCM push if tokens are in Firestore
+    sendFcmPushToUser(otherUserId, {
+      title: senderName,
+      body: pushPreview,
+      icon: senderUser?.profile_photo || '/icon-192.png',
+      tag: `chat_${convId}`,
+      data: {
+        conversationId: convId,
+        messageId: msgId,
+        senderId: currentUserId,
+        url: `/?chat=${encodeURIComponent(convId)}`,
+      },
+    }).catch(() => {});
+
+    // 6. Return message response normally
     return res.status(201).json({ message: newMsg });
   });
 
@@ -853,35 +879,71 @@ export function createExpressApp(
     }
   });
 
+  // Get Push Status for current user
+  app.get(['/api/push/status', '/push/status'], authenticate, async (req, res) => {
+    const currentUserId = ((req as any).user as DbUser)?.id;
+    const subs = await dbGetPushSubscriptionsByUser(currentUserId);
+    return res.json({
+      hasSubscription: subs.length > 0,
+      count: subs.length,
+    });
+  });
+
   // Schedule real server test push after delay (to allow user to minimize/lock phone)
   app.post(['/api/push/test', '/push/test'], authenticate, async (req, res) => {
     const currentUserId = ((req as any).user as DbUser).id;
     const currentUser = (req as any).user as DbUser;
     const { delayMs = 3000 } = req.body || {};
+    const waitMs = Math.max(0, Math.min(10000, Number(delayMs) || 3000));
 
-    setTimeout(async () => {
-      try {
-        console.log(`[TEST_PUSH] Triggering scheduled server push for ${currentUserId}`);
-        await sendWebPushToUser(
-          currentUserId,
-          {
-            title: `@${currentUser.username || 'blabla_chat'}`,
-            body: '🔔 Teste de notificação com app fechado funcionando 100%!',
-            icon: currentUser.profile_photo || '/icon-192.png',
-            badge: '/icon-192.png',
-            tag: 'test_push_server',
-            data: {
-              timestamp: Date.now(),
-            },
+    if (waitMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+
+    try {
+      console.log(`[TEST_PUSH] Triggering server push for ${currentUserId}`);
+      const result = await sendWebPushToUser(
+        currentUserId,
+        {
+          title: `@${currentUser.username || 'blabla_chat'}`,
+          body: '🔔 Teste de notificação com app fechado funcionando 100%!',
+          icon: currentUser.profile_photo || '/icon-192.png',
+          badge: '/icon-192.png',
+          tag: 'test_push_server',
+          data: {
+            timestamp: Date.now(),
           },
-          broadcastToUser,
-        );
-      } catch (err) {
-        console.error('[TEST_PUSH_ERROR]', err);
-      }
-    }, Math.max(500, Math.min(10000, Number(delayMs) || 3000)));
+        },
+        broadcastToUser,
+      );
 
-    return res.json({ success: true, message: 'Notificação push agendada no servidor' });
+      const fcmResult = await sendFcmPushToUser(currentUserId, {
+        title: `@${currentUser.username || 'blabla_chat'}`,
+        body: '🔔 Teste FCM: Notificação com app fechado funcionando 100%!',
+        icon: currentUser.profile_photo || '/icon-192.png',
+        tag: 'test_push_fcm',
+        data: {
+          timestamp: Date.now(),
+        },
+      });
+
+      const totalSent = result.sentCount + fcmResult.sentCount;
+
+      return res.json({
+        success: totalSent > 0,
+        sentCount: totalSent,
+        webPushCount: result.sentCount,
+        fcmCount: fcmResult.sentCount,
+        errors: result.errors + fcmResult.errors,
+        message:
+          totalSent > 0
+            ? `Notificação enviada com sucesso para ${totalSent} aparelho(s)!`
+            : 'Nenhum aparelho cadastrado no banco de dados para seu usuário.',
+      });
+    } catch (err: any) {
+      console.error('[TEST_PUSH_ERROR]', err);
+      return res.status(500).json({ error: err?.message || 'Erro ao enviar notificação' });
+    }
   });
 
   // Unsubscribe Push

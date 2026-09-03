@@ -1893,12 +1893,21 @@ export default async function handler(req: any, res: any) {
       return sendJson(res, 200, { success: true });
     }
 
+    // 19.5 Web Push Status (Check if current user has active subscriptions registered)
+    if ((pathname === '/api/push/status' || pathname === '/push/status') && method === 'GET') {
+      const subs = await dbGetPushSubscriptionsByUser(user.id);
+      return sendJson(res, 200, {
+        hasSubscription: subs.length > 0,
+        count: subs.length,
+      });
+    }
+
     // 20. Web Push Test (Real push to current user with delay)
     if ((pathname === '/api/push/test' || pathname === '/push/test') && method === 'POST') {
-      const delayMs = typeof body.delayMs === 'number' ? Math.max(0, Math.min(30000, body.delayMs)) : 2000;
+      const delayMs = typeof body.delayMs === 'number' ? Math.max(0, Math.min(10000, body.delayMs)) : 2000;
       const testPayload = {
         title: 'Blá Blá • Notificação de Teste',
-        body: '🎉 O serviço Web Push está ativo no seu aparelho! Funciona mesmo com o app fechado.',
+        body: '🎉 O serviço Web Push está ativo no seu aparelho! Notificação recebida com sucesso.',
         icon: user.profile_photo || '/icon-192.png',
         badge: '/icon-192.png',
         tag: 'push_test_' + Date.now(),
@@ -1908,22 +1917,20 @@ export default async function handler(req: any, res: any) {
       };
 
       if (delayMs > 0) {
-        setTimeout(async () => {
-          await sendWebPushToUser(user.id, testPayload);
-        }, delayMs);
-        return sendJson(res, 200, {
-          success: true,
-          message: `Notificação push agendada para daqui a ${Math.round(delayMs / 1000)} segundos. Feche o app ou bloqueie a tela para testar!`,
-        });
-      } else {
-        const result = await sendWebPushToUser(user.id, testPayload);
-        return sendJson(res, 200, {
-          success: true,
-          sentCount: result.sentCount,
-          errors: result.errors,
-          message: result.sentCount > 0 ? 'Notificação enviada com sucesso!' : 'Nenhum dispositivo encontrado para este usuário.',
-        });
+        // Critical: In serverless, we must wait before responding, otherwise the lambda container freezes immediately
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
+
+      const result = await sendWebPushToUser(user.id, testPayload);
+      return sendJson(res, 200, {
+        success: result.sentCount > 0,
+        sentCount: result.sentCount,
+        errors: result.errors,
+        message:
+          result.sentCount > 0
+            ? `Notificação enviada com sucesso para ${result.sentCount} aparelho(s)!`
+            : 'Nenhum aparelho registrado para seu usuário no banco de dados. Ative as notificações no perfil primeiro.',
+      });
     }
 
     // 21. Mark message delivered
