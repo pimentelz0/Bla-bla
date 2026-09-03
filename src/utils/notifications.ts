@@ -245,10 +245,14 @@ export async function syncWebPushSubscription(userId?: string): Promise<boolean>
     }
 
     // 2. Fetch VAPID public key from backend
-    const vapidKey = await api.getVapidPublicKey();
+    let vapidKey = '';
+    try {
+      vapidKey = await api.getVapidPublicKey();
+    } catch (keyErr) {
+      console.warn('[Push] Error or offline fetching VAPID public key, using stable key:', keyErr);
+    }
     if (!vapidKey) {
-      console.warn('[Push] Failed to retrieve VAPID public key from server');
-      return false;
+      vapidKey = 'BAJTG-SdB_hO5SUEAG3Ua-fXycKHi3MZVk96MDuHn39kUIzUOQEqy7WBRA9NdGHiEM6XbX358slBOagLXUG3xB0';
     }
 
     const convertedKey = urlBase64ToUint8Array(vapidKey);

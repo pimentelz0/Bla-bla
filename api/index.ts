@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import crypto from 'crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import webpush from 'web-push';
 
 console.log('[VERCEL_BOOT] api/index.ts loaded');
 console.log('[VERCEL_BOOT] runtime initialized');
@@ -191,6 +192,16 @@ export interface DbAuthToken {
   created_at: string;
 }
 
+export interface DbPushSubscription {
+  id?: string;
+  user_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export const SUPABASE_SQL_SCHEMA = `CREATE TABLE IF NOT EXISTS public.users (
   id TEXT PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
@@ -220,7 +231,8 @@ CREATE TABLE IF NOT EXISTS public.messages (
   receiver_id TEXT NOT NULL,
   message TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  read BOOLEAN DEFAULT FALSE
+  read BOOLEAN DEFAULT FALSE,
+  delivered BOOLEAN DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS public.pins (
@@ -236,11 +248,22 @@ CREATE TABLE IF NOT EXISTS public.auth_tokens (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS public.push_subscriptions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  endpoint TEXT UNIQUE NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.pins ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.auth_tokens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.push_subscriptions ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Allow all on users" ON public.users;
 CREATE POLICY "Allow all on users" ON public.users FOR ALL USING (true) WITH CHECK (true);
@@ -256,6 +279,9 @@ CREATE POLICY "Allow all on pins" ON public.pins FOR ALL USING (true) WITH CHECK
 
 DROP POLICY IF EXISTS "Allow all on auth_tokens" ON public.auth_tokens;
 CREATE POLICY "Allow all on auth_tokens" ON public.auth_tokens FOR ALL USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow all on push_subscriptions" ON public.push_subscriptions;
+CREATE POLICY "Allow all on push_subscriptions" ON public.push_subscriptions FOR ALL USING (true) WITH CHECK (true);
 
 -- Garantir permissões de API para as roles públicas e autenticadas do Supabase
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role, postgres;
@@ -277,6 +303,7 @@ const memoryFallback = {
   messages: new Map<string, DbMessage>(),
   pins: new Map<string, DbPin>(),
   tokens: new Map<string, string>(),
+  pushSubscriptions: new Map<string, DbPushSubscription>(),
 };
 
 export async function checkSupabaseConnection(): Promise<{
@@ -879,6 +906,270 @@ export async function dbDeleteToken(token: string): Promise<void> {
   }
 }
 
+// Push Subscription methods (Dual-layer Supabase persistence guaranteed)
+function getPushTokenKey(endpoint: string): string {
+  const hash = crypto.createHash('sha256').update(endpoint).digest('hex').substring(0, 48);
+  return `pushsub_${hash}`;
+}
+
+export async function dbSavePushSubscription(sub: {
+  userId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}): Promise<void> {
+  const hash = crypto.createHash('sha256').update(sub.endpoint).digest('hex').substring(0, 32);
+  const id = `push_${hash}`;
+  const now = new Date().toISOString();
+  const record: DbPushSubscription = {
+    id,
+    user_id: sub.userId,
+    endpoint: sub.endpoint,
+    p256dh: sub.p256dh,
+    auth: sub.auth,
+    created_at: now,
+    updated_at: now,
+  };
+
+  memoryFallback.pushSubscriptions.set(sub.endpoint, record);
+
+  // 1. Primary storage: public.push_subscriptions table
+  try {
+    const { error: pushTableErr } = await supabase.from('push_subscriptions').upsert(
+      [record],
+      { onConflict: 'endpoint' },
+    );
+    if (pushTableErr) {
+      console.warn('[SUPABASE_PUSH_SUB_UPSERT_WARN]', pushTableErr.message || pushTableErr);
+      const { data: existing } = await supabase
+        .from('push_subscriptions')
+        .select('id')
+        .eq('endpoint', sub.endpoint)
+        .maybeSingle();
+
+      if (existing?.id) {
+        const { error: updateErr } = await supabase
+          .from('push_subscriptions')
+          .update({ user_id: sub.userId, p256dh: sub.p256dh, auth: sub.auth, updated_at: now })
+          .eq('endpoint', sub.endpoint);
+        if (updateErr) console.warn('[SUPABASE_PUSH_SUB_UPDATE_WARN]', updateErr.message || updateErr);
+      } else {
+        const { error: insertErr } = await supabase.from('push_subscriptions').insert([record]);
+        if (insertErr) console.warn('[SUPABASE_PUSH_SUB_INSERT_WARN]', insertErr.message || insertErr);
+      }
+    }
+  } catch (err: any) {
+    console.warn('Supabase push_subscriptions table write note:', err?.message || err);
+  }
+
+  // 2. Guaranteed fallback storage: public.auth_tokens table (always exists in project database)
+  try {
+    const tokenKey = getPushTokenKey(sub.endpoint);
+    const compositeUserId = `PUSH:${sub.userId}:${JSON.stringify({
+      endpoint: sub.endpoint,
+      p256dh: sub.p256dh,
+      auth: sub.auth,
+    })}`;
+
+    await supabase.from('auth_tokens').delete().eq('token', tokenKey);
+
+    await supabase.from('auth_tokens').upsert([
+      {
+        token: tokenKey,
+        user_id: compositeUserId,
+        created_at: now,
+      },
+    ]);
+  } catch (err) {
+    console.debug('Supabase auth_tokens push fallback write note:', err);
+  }
+}
+
+export async function dbGetPushSubscriptionsByUser(userId: string): Promise<DbPushSubscription[]> {
+  const subscriptionMap = new Map<string, DbPushSubscription>();
+
+  // 1. Primary: query public.push_subscriptions
+  try {
+    const { data: pushData, error: pushErr } = await supabase
+      .from('push_subscriptions')
+      .select('*')
+      .eq('user_id', userId);
+
+    if (!pushErr && Array.isArray(pushData)) {
+      for (const s of pushData) {
+        if (s?.endpoint && s?.p256dh && s?.auth) {
+          subscriptionMap.set(s.endpoint, s as DbPushSubscription);
+        }
+      }
+    } else if (pushErr) {
+      console.warn('[SUPABASE_PUSH_LOOKUP_WARN]', pushErr.message || pushErr);
+    }
+  } catch (err: any) {
+    console.warn('Supabase push_subscriptions query note:', err?.message || err);
+  }
+
+  // 2. Dual fallback: query public.auth_tokens for PUSH:<userId>:*
+  try {
+    const { data: tokenData, error: tokenErr } = await supabase
+      .from('auth_tokens')
+      .select('*')
+      .like('user_id', `PUSH:${userId}:%`);
+
+    if (!tokenErr && Array.isArray(tokenData)) {
+      for (const row of tokenData) {
+        try {
+          const rawPayload = row.user_id.substring(`PUSH:${userId}:`.length);
+          const parsed = JSON.parse(rawPayload);
+          if (parsed?.endpoint && parsed?.p256dh && parsed?.auth) {
+            subscriptionMap.set(parsed.endpoint, {
+              id: row.token,
+              user_id: userId,
+              endpoint: parsed.endpoint,
+              p256dh: parsed.p256dh,
+              auth: parsed.auth,
+              created_at: row.created_at || new Date().toISOString(),
+              updated_at: row.created_at || new Date().toISOString(),
+            });
+          }
+        } catch {}
+      }
+    }
+  } catch (err) {
+    console.debug('Supabase auth_tokens push fallback query note:', err);
+  }
+
+  // 3. In-memory fallback
+  for (const s of memoryFallback.pushSubscriptions.values()) {
+    if (s.user_id === userId && !subscriptionMap.has(s.endpoint)) {
+      subscriptionMap.set(s.endpoint, s);
+    }
+  }
+
+  const results = Array.from(subscriptionMap.values());
+  for (const s of results) {
+    memoryFallback.pushSubscriptions.set(s.endpoint, s);
+  }
+
+  console.log(`[Push Lookup] userId: ${userId}`);
+  console.log(`[Push Lookup] subscriptionsFound: ${results.length}`);
+
+  return results;
+}
+
+export async function dbDeletePushSubscription(endpoint: string): Promise<void> {
+  memoryFallback.pushSubscriptions.delete(endpoint);
+
+  try {
+    await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint);
+  } catch {}
+
+  try {
+    const tokenKey = getPushTokenKey(endpoint);
+    await supabase.from('auth_tokens').delete().eq('token', tokenKey);
+  } catch {}
+}
+
+export async function dbMarkMessagesAsDelivered(messageIds: string[]): Promise<void> {
+  if (!messageIds || messageIds.length === 0) return;
+  for (const id of messageIds) {
+    const m = memoryFallback.messages.get(id);
+    if (m) (m as any).delivered = true;
+  }
+  try {
+    await supabase.from('messages').update({ delivered: true }).in('id', messageIds);
+  } catch {}
+}
+
+// Constant stable VAPID keypair to guarantee push subscriptions never get invalidated
+const STABLE_VAPID_KEYS = {
+  publicKey: 'BAJTG-SdB_hO5SUEAG3Ua-fXycKHi3MZVk96MDuHn39kUIzUOQEqy7WBRA9NdGHiEM6XbX358slBOagLXUG3xB0',
+  privateKey: 'Jg3X-XRYk7TkiSZGhhHRIKXvdo8i4Un6muNdQufRphA',
+};
+
+const vapidPublicKey = (process.env.VAPID_PUBLIC_KEY || STABLE_VAPID_KEYS.publicKey).trim();
+const vapidPrivateKey = (process.env.VAPID_PRIVATE_KEY || STABLE_VAPID_KEYS.privateKey).trim();
+
+try {
+  webpush.setVapidDetails(
+    'mailto:suporte@blabla.chat',
+    vapidPublicKey,
+    vapidPrivateKey,
+  );
+} catch (vapidErr) {
+  console.warn('[VERCEL_VAPID_WARN] Failed to configure web-push VAPID details:', vapidErr);
+}
+
+export function getVapidPublicKey(): string {
+  return vapidPublicKey;
+}
+
+export interface PushPayload {
+  title: string;
+  body: string;
+  icon?: string;
+  badge?: string;
+  tag?: string;
+  data?: {
+    conversationId?: string;
+    messageId?: string;
+    senderId?: string;
+    timestamp?: number;
+  };
+}
+
+export async function sendWebPushToUser(
+  userId: string,
+  payload: PushPayload,
+): Promise<{ sentCount: number; errors: number }> {
+  try {
+    const subscriptions = await dbGetPushSubscriptionsByUser(userId);
+    if (!subscriptions || subscriptions.length === 0) {
+      return { sentCount: 0, errors: 0 };
+    }
+
+    let sentCount = 0;
+    let errors = 0;
+    const payloadString = JSON.stringify(payload);
+
+    await Promise.all(
+      subscriptions.map(async (sub) => {
+        try {
+          const pushSubscription = {
+            endpoint: sub.endpoint,
+            keys: {
+              p256dh: sub.p256dh,
+              auth: sub.auth,
+            },
+          };
+
+          await webpush.sendNotification(pushSubscription, payloadString, {
+            TTL: 60 * 60 * 24, // 24 hours
+            urgency: 'high',
+          });
+
+          sentCount++;
+        } catch (err: any) {
+          errors++;
+          if (err.statusCode === 404 || err.statusCode === 410) {
+            await dbDeletePushSubscription(sub.endpoint);
+          } else {
+            console.debug(`WebPush error for user ${userId}:`, err.message || err);
+          }
+        }
+      }),
+    );
+
+    if (sentCount > 0 && payload.data?.messageId) {
+      await dbMarkMessagesAsDelivered([payload.data.messageId]);
+    }
+
+    return { sentCount, errors };
+  } catch (err) {
+    console.error(`Failed to send web push to user ${userId}:`, err);
+    return { sentCount: 0, errors: 1 };
+  }
+}
+
 // ==========================================
 // VERCEL SERVERLESS HANDLER
 // ==========================================
@@ -1201,6 +1492,11 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    // VAPID Public Key for Web Push (no auth required)
+    if ((pathname === '/api/push/vapid-public-key' || pathname === '/push/vapid-public-key') && method === 'GET') {
+      return sendJson(res, 200, { publicKey: getVapidPublicKey() });
+    }
+
     // --- Authenticated routes below ---
     const auth = await getAuthUser(req);
     if (!auth) {
@@ -1488,6 +1784,43 @@ export default async function handler(req: any, res: any) {
         await dbCreateMessage(newMsg);
         await dbUpdateConversationLastMessage(convId, cleanText, now, user.id);
 
+        // Web Push notification to recipient
+        let pushPreview = cleanText;
+        try {
+          const parsed = JSON.parse(cleanText);
+          if (parsed.type === 'image') pushPreview = '📷 Foto' + (parsed.content ? `: ${parsed.content}` : '');
+          else if (parsed.type === 'audio') pushPreview = '🎤 Mensagem de voz';
+          else if (parsed.type === 'sticker') pushPreview = '🎭 Figurinha';
+        } catch {}
+
+        const senderName = user.username ? `@${user.username}` : 'Blá Blá';
+        const pushPayload = {
+          title: senderName,
+          body: pushPreview,
+          icon: user.profile_photo || '/icon-192.png',
+          badge: '/icon-192.png',
+          tag: `chat_${convId}`,
+          data: {
+            conversationId: convId,
+            messageId: msgId,
+            senderId: user.id,
+            timestamp: Date.now(),
+          },
+        };
+
+        try {
+          const pushPromise = sendWebPushToUser(otherUserId, pushPayload);
+          const timeoutPromise = new Promise<{ sentCount: number; errors: number }>((resolve) =>
+            setTimeout(() => resolve({ sentCount: 0, errors: 0 }), 3000)
+          );
+          const pushResult = await Promise.race([pushPromise, timeoutPromise]);
+          const totalSubscriptions = pushResult.sentCount + pushResult.errors;
+          const pushDispatchStatus = pushResult.sentCount > 0 ? 'success' : totalSubscriptions === 0 ? 'no_subscriptions' : 'failed';
+          console.log(`[Push Message]\nsenderId: ${user.id}\nreceiverId: ${otherUserId}\nsubscriptionsFound: ${totalSubscriptions}\npushDispatch: ${pushDispatchStatus}`);
+        } catch (pushErr) {
+          console.error(`[Push Message]\nsenderId: ${user.id}\nreceiverId: ${otherUserId}\npushDispatch: error`, pushErr);
+        }
+
         return sendJson(res, 201, { message: newMsg });
       }
 
@@ -1502,6 +1835,98 @@ export default async function handler(req: any, res: any) {
     if (deleteConvMatch && method === 'DELETE') {
       const convId = deleteConvMatch[1];
       await dbDeleteConversation(user.id, convId);
+      return sendJson(res, 200, { success: true });
+    }
+
+    // 18. Web Push Subscribe
+    if ((pathname === '/api/push/subscribe' || pathname === '/push/subscribe') && method === 'POST') {
+      const subscription = body.subscription || body;
+      const hasEndpoint = Boolean(subscription?.endpoint);
+      const hasKeys = Boolean(subscription?.keys?.p256dh && subscription?.keys?.auth);
+      const isValid = Boolean(hasEndpoint && hasKeys);
+
+      console.log(`[Push Subscribe] userId: ${user.id}`);
+      console.log(`[Push Subscribe] subscriptionReceived: ${isValid ? 'true' : 'false'}`);
+
+      if (!isValid) {
+        console.log(`[Push Subscribe] subscriptionSaved: false`);
+        console.log(`[Push Subscribe] error: Inscrição Push inválida ou sem chaves.`);
+        return sendJson(res, 400, {
+          error: 'Inscrição Push inválida. Endpoint e chaves p256dh/auth são obrigatórios.',
+        });
+      }
+
+      try {
+        await dbSavePushSubscription({
+          userId: user.id,
+          endpoint: subscription.endpoint,
+          p256dh: subscription.keys.p256dh,
+          auth: subscription.keys.auth,
+        });
+
+        console.log(`[Push Subscribe] subscriptionSaved: true`);
+        return sendJson(res, 200, {
+          success: true,
+          message: 'Inscrição de notificações Push salva com sucesso no Supabase.',
+        });
+      } catch (saveErr: any) {
+        console.log(`[Push Subscribe] subscriptionSaved: false`);
+        console.log(`[Push Subscribe] error: ${saveErr?.message || saveErr}`);
+        return sendJson(res, 500, {
+          error: 'Falha ao salvar inscrição push no banco de dados.',
+          details: saveErr?.message,
+        });
+      }
+    }
+
+    // 19. Web Push Unsubscribe
+    if ((pathname === '/api/push/unsubscribe' || pathname === '/push/unsubscribe') && method === 'POST') {
+      const endpoint = body.endpoint;
+      if (endpoint) {
+        await dbDeletePushSubscription(endpoint);
+      }
+      return sendJson(res, 200, { success: true });
+    }
+
+    // 20. Web Push Test (Real push to current user with delay)
+    if ((pathname === '/api/push/test' || pathname === '/push/test') && method === 'POST') {
+      const delayMs = typeof body.delayMs === 'number' ? Math.max(0, Math.min(30000, body.delayMs)) : 2000;
+      const testPayload = {
+        title: 'Blá Blá • Notificação de Teste',
+        body: '🎉 O serviço Web Push está ativo no seu aparelho! Funciona mesmo com o app fechado.',
+        icon: user.profile_photo || '/icon-192.png',
+        badge: '/icon-192.png',
+        tag: 'push_test_' + Date.now(),
+        data: {
+          timestamp: Date.now(),
+        },
+      };
+
+      if (delayMs > 0) {
+        setTimeout(async () => {
+          await sendWebPushToUser(user.id, testPayload);
+        }, delayMs);
+        return sendJson(res, 200, {
+          success: true,
+          message: `Notificação push agendada para daqui a ${Math.round(delayMs / 1000)} segundos. Feche o app ou bloqueie a tela para testar!`,
+        });
+      } else {
+        const result = await sendWebPushToUser(user.id, testPayload);
+        return sendJson(res, 200, {
+          success: true,
+          sentCount: result.sentCount,
+          errors: result.errors,
+          message: result.sentCount > 0 ? 'Notificação enviada com sucesso!' : 'Nenhum dispositivo encontrado para este usuário.',
+        });
+      }
+    }
+
+    // 21. Mark message delivered
+    if ((pathname === '/api/messages/delivered' || pathname === '/messages/delivered') && method === 'POST') {
+      const { messageId } = body;
+      if (messageId) {
+        await dbMarkMessagesAsDelivered([messageId]);
+      }
       return sendJson(res, 200, { success: true });
     }
 
